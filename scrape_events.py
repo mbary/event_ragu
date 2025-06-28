@@ -52,7 +52,7 @@ def get_title(soup: BeautifulSoup) -> str:
     """Extracts and formats the title from the event page."""
 
     raw_title = soup.find('h1', class_="article-title section-title bottom-line-short h3").text.strip()
-    raw_title = re.sub(r'[/\\.?!\'\"]', '', raw_title)
+    raw_title = re.sub(r'[/\\.?!\'\"-]', '', raw_title)
     title = '_'.join(raw_title.split()).lower()
     return title
 
