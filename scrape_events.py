@@ -7,11 +7,15 @@ from pathlib import Path
 from typing import List, Tuple
 import aiofiles
 from markdownify import markdownify as md
+import uuid
+
+from itertools import count
 
 
 EVENT_DATA_DIR = Path("./data/events")
 EVENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
+_EXISTING_IDS = [int(m.group(1)) for m in (re.search(r'+(\d+)\.md', f.name) for f in EVENT_DATA_DIR.glob('*.md')) if m]
+_NEXT_ID =count(max(_EXISTING_IDS) + 1 if _EXISTING_IDS else 1)
 async def get_max_page(session: aiohttp.ClientSession, url: str) -> int:
     """Get the maximum page number from the events listing."""
     async with session.get(url) as response:
@@ -36,7 +40,20 @@ def clean_html(res: str) -> BeautifulSoup:
     """Cleans the HTML content of the event page by removing unnecessary elements."""
 
     pat = r'<article>(.*?)</article>'
-    res = re.search(pat, res, re.DOTALL).group(0)
+    match = re.search(pat, res, re.DOTALL)
+    
+    if match:
+        res = match.group(0)
+    else:
+        print("WARNING: No <article> tag found, using full page content")
+        soup = BeautifulSoup(res, 'html.parser')
+        content = (soup.find('main') or 
+                  soup.find('div', class_='content') or
+                  soup.find('div', class_='article-content'))
+        if content:
+            res = str(content)
+        else:
+            print("WARNING: Using full page content, no article/main/content div found")
     
     soup = BeautifulSoup(res, 'html.parser')
     for div in soup.find_all('div', class_='article-tools d-inline-flex justify-content-start'):
@@ -52,8 +69,8 @@ def get_title(soup: BeautifulSoup) -> str:
     """Extracts and formats the title from the event page."""
 
     raw_title = soup.find('h1', class_="article-title section-title bottom-line-short h3").text.strip()
-    raw_title = re.sub(r'[/\\.?!\'\"-]', '', raw_title)
-    title = '_'.join(raw_title.split()).lower()
+    raw_title = re.sub(r"[\/\\.!?'\"|‒\u2013\u2014:#;,„”\-]", '', raw_title)
+    title = '_'.join(raw_title.split()).lower().lstrip()
     return title
 
 
@@ -86,24 +103,26 @@ async def convert_to_markdown(session: aiohttp.ClientSession, url: str) -> Tuple
     title = get_title(soup)
     cleaned_data = str(soup).strip()
     data = md(cleaned_data, strip=['a', 'li', 'svg', 'ul', 'span'], default_title=True, heading_style="ATX")
-    return data, title
+    return data, title, url
 
-async def save_to_markdown(data: str, title: str) -> None:
+async def save_to_markdown(data: str, title: str, url: str) -> None:
     """Save markdown data to file asynchronously."""
-    filepath = EVENT_DATA_DIR / f'{title}.md'
+    file_id = next(_NEXT_ID)
+    filepath = EVENT_DATA_DIR / f'{title}_{file_id:05d}.md'
+    lines = [f'# URL: {url}\n']
+    for line in data.split('\n'):
+        if 'null' not in line and line.strip():
+            lines.append(line + '\n')
+
     async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
-        for line in data.split('\n'):
-            if 'null' not in line and line.strip():
-                await f.write(line + '\n')
+        await f.write(''.join(lines))
 
 async def process_event(session: aiohttp.ClientSession, event_url: str, semaphore: asyncio.Semaphore) -> None:
     """Process a single event URL with rate limiting."""
     async with semaphore:
         try:
-            print(f"Processing: {event_url}")
-            data, title = await convert_to_markdown(session, event_url)
-            await save_to_markdown(data, title)
-            print(f"Saved: {title}.md")
+            data, title, url = await convert_to_markdown(session, event_url)
+            await save_to_markdown(data, title, url)
         except Exception as e:
             print(f"Error processing {event_url}: {e}")
 
@@ -111,7 +130,6 @@ async def main():
     """Main async function to orchestrate the scraping process."""
     base_url = "https://um.warszawa.pl/kalendarz"
     
-    # Limit concurrent requests to be respectful to the server
     semaphore = asyncio.Semaphore(5)
     
     async with aiohttp.ClientSession(
@@ -120,11 +138,9 @@ async def main():
     ) as session:
         
 
-        # Generate all page URLs
         page_urls = await get_pages(session, base_url)
         print(f"Found {len(page_urls)} pages to process")
         
-        # Get all event URLs from all pages
         print("Collecting event URLs from all pages...")
         all_event_urls = []
         
@@ -133,16 +149,12 @@ async def main():
                 event_urls = await get_event_urls(session, page_url)
                 all_event_urls.extend(event_urls)
                 print(f"Found {len(event_urls)} events on page {page_url.split('=')[-1]}")
-                # Small delay to be respectful to the server
-                await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Error processing page {page_url}: {e}")
         
-        # Remove duplicates
         unique_event_urls = list(set(all_event_urls))
         print(f"Total unique events to process: {len(unique_event_urls)}")
-        
-        # Process all events concurrently with rate limiting
+
         print("Processing events...")
         tasks = [
             process_event(session, event_url, semaphore) 
