@@ -31,8 +31,8 @@ def init_collection():
         ids = []
         metadatas = []
         for file in event_files:
-            title = file.split('.')[0]
-            page_id = title
+            title = ' '.join(file.split('.')[0].split('_')[:-1])
+            page_id = file.split('.')[0]
 
             docs.append(title)
             ids.append(page_id)
@@ -48,8 +48,8 @@ def init_collection():
 
         return collection
     
-collection = init_collection()
+# collection = init_collection()
 
 
-print(db_client.get_collection("event_titles").count())
-print(db_client.list_collections())
+# print(db_client.get_collection("event_titles").count())
+# print(db_client.list_collections())
