@@ -40,6 +40,14 @@ class SearchEventPagesOutput(BaseModel):
             {"page_id": "event1", "title": "Concert in the Park"},
             {"page_id": "event2", "title": "Art Exhibition Opening"}
         ])
+    
+class ReadEventDetailsInput(BaseModel):
+    """Input for reading event page details"""
+    action_type: Literal["read_event_details"] = "read_event_details"
+    think: str = Field(description="Why this event file needs to be read and what information to extract")
+    page_id_list: List[str] = Field(description="List of The IDs of the pages to read",
+                         examples=[["zajęcia_sportowe_dla_wilanowskich_seniorów_00078",
+                                   "memoriał_bohdana_bartosiewicza_00012"]])
 
 class SearchEventPagesInput(BaseModel):
     """Input for searching event pages"""
@@ -50,7 +58,25 @@ class SearchEventPagesInput(BaseModel):
                                   , "What concerts are there?"])
     
 
+class EventDetails(BaseModel):
+    """Representes the event details for the selected event"""
+    title: str = Field(..., description="The main title of the event.")
 
+    start_datetime: datetime = Field(description="Start date and time of the event",
+                            examples=["2023-10-01 18:00:00", "2023-10-01 18:00:00"])
+    
+    end_datetime: datetime = Field(description="End date and time of the event",
+                          examples=["2023-10-01 20:00:00", "2023-10-01 20:00:00"])
+    
+    location: str = Field(description="Location of the event",
+                            examples=["Zamek Królewski", "Teatr Narodowy"])
+    
+    description: str = Field(description="Summary description of the event",
+                             examples=["A concert by the Warsaw Philharmonic Orchestra",
+                                       "An exhibition of modern art at the National Museum"])
+    
+    source_url: str = Field(None, description="The source URL of the event page.")
+    # confidence: float = Field(ge=0, le=1, description="Confidence score of the final answer (0-1)")
 
 
 ###################################
@@ -81,15 +107,53 @@ class SearchEventPageTitlesTool(SearchEventPagesInput):
             ))
         return output
 
+class ReadEventDetailsTool(ReadEventDetailsInput):
+    """Read the markdown content of an event file.
+    
+    Returns:
+        str: The full markdown content of the event file, which contains event details like title, dates, location, and description.
+    """
+    
+    def execute(self) -> str:
+        """Read and return the markdown content of the event file.
+        
+        Returns:
+            str: The full markdown content of the event file.
+        """
+        # Construct file path
+        file_paths = [os.path.join(EVENT_DIR, f"{page_id}.md") for page_id in self.page_id_list]
+        
+        for file_path in file_paths:
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return f"Error: Event file not found for page_id: {file_paths}"
+            
+            # Read and return the markdown content
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Return with a helpful header for the agent
+                return f"Event file content for {file_paths}:\n\n{content}"
+                
+            except Exception as e:
+                return f"Error reading file {file_path}: {str(e)}"
+
+
 
 class FinalAction(BaseModel):
-    """Provide the final answer to the user"""
+    """Provide the final answer to the user
+    Returns:
+        EventDetails: The final comprehensive answer to the user's query, including event details like title, dates, location, and description.
+    """
     action_type: Literal["finish"] = "finish"
     think: str = Field(description="Final reasoning before providing the answer")
-    answer: str = Field(description="Final comprehensive answer to the user's query")
+    answer: EventDetails = Field(description="Final comprehensive answer to the user's query")
+    # answer: str = Field(description="Final comprehensive answer to the user's query")
     confidence: float = Field(ge=0, le=1, description="Confidence score of the final answer (0-1)")
 
-    def execute(self) -> str:
+    def execute(self) -> EventDetails:
         """Execute the final action and return the answer.
         
         Returns:
@@ -98,11 +162,16 @@ class FinalAction(BaseModel):
         return self.answer
 
 # AgentActions = Union[SearchEventPageTitlesTool, FinalActionTool, ReadPageDetailsTool]
-AgentActions = Union[SearchEventPageTitlesTool, FinalAction]
+AgentActions = Union[SearchEventPageTitlesTool, FinalAction, ReadEventDetailsTool]
 
 
 SYSTEM_PROMPT = f"""You are a helpful AI agent that answers question by breaking them down into steps.
 Think step by step, and use the tools available to you to gather information.
+
+You have access to the following tools:
+1. search_event_pages: Search for events by title/topic
+2. read_event_details: Read the full markdown content of a specific event page
+3. finish: Provide the final answer
 
 Today is {datetime.now().today()}.
 
@@ -110,9 +179,9 @@ For each step:
 1. Think about the information you need
 2. Choose the most appropriate action
 3. Use the result to inform your next step
-4. When you have enough information, and are confident in your answer, provide a final response.
-You can use the following tools:
-
+4. Always read the event page content before providing a final answer.
+5. Always read all relevant event pages before providing a final answer.
+6. When you have enough information, and are confident in your answer, provide a final response.
 
 Always think before taking an action, and explain why you are taking it.
 Always explain your reasoning in the 'think' field of the action.
@@ -189,21 +258,21 @@ class MyAgent:
                     messages= self.conversation_history,
                     max_tokens=4096
                 )
-                pprint(action.model_dump())
+                # pprint(action.model_dump())
             except Exception as e:
                 self._log(f"Error during action generation: {e}")
                 return "An error occurred while processing your request."
             
             self._log(f"Thought: {action.think}")
             self._log(f"Action: {action.action_type}")
-            pprint(action.model_dump())
+            # pprint(action.model_dump())
             result = action.execute()
             self._log(f"Result: {result}")
 
             self.action_history.append({
                 "step": step_num + 1,
                 "think": action.think,
-                "action": action.action_type,
+                "action_type": action.action_type,
                 "result": result
             })
 
@@ -218,6 +287,7 @@ class MyAgent:
             # if isinstance(action, FinalActionTool):
                 self._log(f"\nFinal Answer: {action.answer}")
                 self._log(f"Confidence: {action.confidence}")
+                # return action.answer.model_dump()
                 return action.answer
             
             self.conversation_history.append({
@@ -236,6 +306,7 @@ class MyAgent:
             max_tokens=4096
         )
         print(f"Final Thought: {final_action.think}")
+        # return final_action.answer.model_dump()
         return final_action.answer
     
     def get_action_summary(self) -> str:
@@ -243,8 +314,8 @@ class MyAgent:
         summary = "Action Summary:\n"
         for action in self.action_history:
             summary += f"\nStep {action['step']}: {action['action_type']}\n"
-            summary += f"  Thought: {action['thought']}\n"
-            summary += f"  Result: {action['result'][:100]}...\n" if len(action['result']) > 100 else f"  Result: {action['result']}\n"
+            summary += f"  Thought: {action['think']}\n"
+            summary += f"  Result: {action['result']}\n"
         return summary
     
 
@@ -261,6 +332,7 @@ if __name__ == "__main__":
             
             agent = MyAgent(model="gpt-4.1-mini", verbose=True)
             final_answer = agent.step(user_query)
+            agent.get_action_summary()
             print(f"\nFinal Answer: {final_answer}")
         except KeyboardInterrupt:
             print("\nExiting...")
