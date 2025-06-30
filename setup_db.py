@@ -47,9 +47,3 @@ def init_collection():
             )
 
         return collection
-    
-# collection = init_collection()
-
-
-# print(db_client.get_collection("event_titles").count())
-# print(db_client.list_collections())
