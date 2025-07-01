@@ -34,6 +34,8 @@ class EventPageResult(BaseModel):
     
 class SearchEventPagesOutput(BaseModel):
     """Output containing top 10 relevant event pages."""
+    # confidence: float = Field(ge=0, le=1, description="Confidence score of the event page result (0-1)",
+    #                     examples=[0.95, 0.85, 0.75])
     results: List[EventPageResult] = Field(
         description="List of top 10 relevant event pages",
         examples=[
@@ -45,9 +47,12 @@ class ReadEventDetailsInput(BaseModel):
     """Input for reading event page details"""
     action_type: Literal["read_event_details"] = "read_event_details"
     think: str = Field(description="Why this event file needs to be read and what information to extract")
-    page_id_list: List[str] = Field(description="List of The IDs of the pages to read",
-                         examples=[["zajęcia_sportowe_dla_wilanowskich_seniorów_00078",
-                                   "memoriał_bohdana_bartosiewicza_00012"]])
+    # page_id_list: List[str] = Field(description="List of The IDs of the pages to read",
+    #                      examples=[["zajęcia_sportowe_dla_wilanowskich_seniorów_00078",
+    #                                "memoriał_bohdana_bartosiewicza_00012"]])
+    page_id: str = Field(description="The ID of the page to read",
+                         examples=["zajęcia_sportowe_dla_wilanowskich_seniorów_00078",
+                                   "memoriał_bohdana_bartosiewicza_00012"])
 
 class SearchEventPagesInput(BaseModel):
     """Input for searching event pages"""
@@ -115,30 +120,33 @@ class ReadEventDetailsTool(ReadEventDetailsInput):
     """
     
     def execute(self) -> str:
-        """Read and return the markdown content of the event file.
+        """Read the content of thevent files and return their markdown content."""
+
+        filepath = os.path.join(EVENT_DIR, self.page_id + ".md")
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return content
+
+
+    # def execute(self) -> str:
+    #     """Read and return the markdown content of the event files."""
+    #     all_contents = []
         
-        Returns:
-            str: The full markdown content of the event file.
-        """
-        # Construct file path
-        file_paths = [os.path.join(EVENT_DIR, f"{page_id}.md") for page_id in self.page_id_list]
+    #     for page_id in self.page_id_list:
+    #         file_path = os.path.join(EVENT_DIR, f"{page_id}.md")
+            
+    #         if not os.path.exists(file_path):
+    #             all_contents.append(f"Error: Event file not found for page_id: {page_id}")
+    #             continue
+            
+    #         try:
+    #             with open(file_path, 'r', encoding='utf-8') as f:
+    #                 content = f.read()
+    #             all_contents.append(f"Event file content for {page_id}:\n\n{content}")
+    #         except Exception as e:
+    #             all_contents.append(f"Error reading file {file_path}: {str(e)}")
         
-        for file_path in file_paths:
-            
-            # Check if file exists
-            if not os.path.exists(file_path):
-                return f"Error: Event file not found for page_id: {file_paths}"
-            
-            # Read and return the markdown content
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                # Return with a helpful header for the agent
-                return f"Event file content for {file_paths}:\n\n{content}"
-                
-            except Exception as e:
-                return f"Error reading file {file_path}: {str(e)}"
+    #     return "\n\n" + "="*60 + "\n\n".join(all_contents)
 
 
 
@@ -165,28 +173,53 @@ class FinalAction(BaseModel):
 AgentActions = Union[SearchEventPageTitlesTool, FinalAction, ReadEventDetailsTool]
 
 
-SYSTEM_PROMPT = f"""You are a helpful AI agent that answers question by breaking them down into steps.
-Think step by step, and use the tools available to you to gather information.
+# SYSTEM_PROMPT = f"""You are a helpful AI agent that answers question by breaking them down into steps.
+# Think step by step, and use the tools available to you to gather information.
+
+# You have access to the following tools:
+# 1. search_event_pages: Search for events by title/topic
+# 2. read_event_details: Read the full markdown content of a specific event page
+# 3. finish: Provide the final answer
+
+# Today is {datetime.now().today()}.
+
+# For each step:
+# 1. Think about the information you need
+# 2. Choose the most appropriate action
+# 3. Use the result to inform your next step
+# 4. Always read the event page content before providing a final answer.
+# 5. Always read all relevant event pages before providing a final answer.
+# 6. When you have enough information, and are confident in your answer, provide a final response.
+
+# Always think before taking an action, and explain why you are taking it.
+# Always explain your reasoning in the 'think' field of the action.
+# """##TODO add verifiers and parsing tools into prompt
+
+SYSTEM_PROMPT = f"""You are a helpful assistant that helps users find information about events.
 
 You have access to the following tools:
-1. search_event_pages: Search for events by title/topic
+1. search_event_pages: Find event pages using embedding similarity search
 2. read_event_details: Read the full markdown content of a specific event page
-3. finish: Provide the final answer
+3. finish: Provide the final answer with all event details
 
 Today is {datetime.now().today()}.
 
-For each step:
-1. Think about the information you need
-2. Choose the most appropriate action
-3. Use the result to inform your next step
-4. Always read the event page content before providing a final answer.
-5. Always read all relevant event pages before providing a final answer.
-6. When you have enough information, and are confident in your answer, provide a final response.
+You may make up to 10 tool calls before giving your final answer.
 
-Always think before taking an action, and explain why you are taking it.
-Always explain your reasoning in the 'think' field of the action.
-"""##TODO add verifiers and parsing tools into prompt
+In each turn, respond in the following format:
+<think>
+[your thoughts here]
+</think>
+<tool>
 
+When you have found the answer, respond in the following format:
+<think>
+[your thoughts here]
+</think>
+<answer>
+[final answer here]
+</answer>
+"""
 
 
 # SYSTEM_PROMPT = """You are a helpful AI agent that answers question by breaking them down into steps.
@@ -221,7 +254,9 @@ class MyAgent:
         self.conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.client = instructor.from_openai(
             OpenAI(api_key=os.environ.get("OPENAI_API_KEY") ),
-            mode=instructor.Mode.TOOLS_STRICT)
+            mode=instructor.Mode.TOOLS_STRICT,
+            temperature=0.5
+            )
         
     def _log(self, message: str):
         """Print if verbose is True."""
@@ -269,6 +304,7 @@ class MyAgent:
             result = action.execute()
             self._log(f"Result: {result}")
 
+            # Add to memory
             self.action_history.append({
                 "step": step_num + 1,
                 "think": action.think,
@@ -280,7 +316,7 @@ class MyAgent:
 
             self.conversation_history.append({
                 "role": "assistant",
-                "content": action_summary
+                "content": action_summary + f"Result: {result}"
             })
 
             if isinstance(action, FinalAction):
