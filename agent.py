@@ -123,6 +123,7 @@ class ReadEventDetailsTool(ReadEventDetailsInput):
         """Read the content of thevent files and return their markdown content."""
 
         filepath = os.path.join(EVENT_DIR, self.page_id + ".md")
+        print(f"Reading event file: {filepath}")
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
         return content
@@ -205,12 +206,14 @@ You have access to the following tools:
 Today is {datetime.now().today()}.
 
 You may make up to 10 tool calls before giving your final answer.
-
+"""
+"""
 In each turn, respond in the following format:
 <think>
 [your thoughts here]
 </think>
 <tool>
+ 
 
 When you have found the answer, respond in the following format:
 <think>
