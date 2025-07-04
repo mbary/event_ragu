@@ -23,7 +23,7 @@ def init_collection():
         return collection
     
     except:
-        collection = db_client.create_collection("event_titles", embedding_function=openai_embedding)
+        collection = db_client.create_collection("event_titles", embedding_function=openai_embedding,metadata={"hnsw:space": "cosine"})
 
         event_files = [f for f in os.listdir(EVENT_DIR) if f.endswith('.md')]
 
@@ -47,3 +47,10 @@ def init_collection():
             )
 
         return collection
+    
+if __name__ == "__main__":
+    collection = init_collection()
+    print(f"Initialized collection with {collection.count()} documents.")
+    print("Collection metadata:", collection.get_metadata())
+    print("Collection info:", collection.get_info())
+    print("List of collections:", db_client.list_collections())
