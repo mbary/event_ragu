@@ -66,7 +66,7 @@ class UserIntent(BaseModel):
     keywords: List[UserIntentKeyWord] = Field(description="A list of keywords, specifically related to the event, to refine the search.",
                                               examples=["concert", "exhibition", "theater", "art", "music"], 
                                               max_length=5, 
-                                              min_length=2)
+                                              min_length=1)
 
 
 
@@ -130,28 +130,28 @@ class SearchEventPagesInput(BaseModel):
     """Input for searching event pages"""
     action_type: Literal["search_event_pages"] = "search_event_pages"
     think: str = Field(description="Why is this search needed abd what information is sought")
-    keywords: List[str] = Field(description="List of keywords infered from user query",
-                        examples=["pierogi", "koncert", "wystawa", "teatr", "sztuka"])
+    # keywords: List[str] = Field(description="List of keywords infered from user query",
+    #                     examples=["pierogi", "koncert", "wystawa", "teatr", "sztuka"])
 
 class SearchEventPageTitlesTool(SearchEventPagesInput):
     """Search for top 10 relevant event pages using title embedding similarity.
     Returns:
         SearchEventPagesOutput: Output containing top 10 relevant event pages."""
 
-    def execute(self) -> SearchEventPagesOutput:
+    def execute(self, keywords) -> SearchEventPagesOutput:
         """Execute the search and return for 10 results using title embedding similarity.
         Returns:
             SearchEventPagesOutput: Output containing top 10 relevant event pages.
         """
         print("="*30)
-        print(self.keywords)
+        print(keywords)
         final_dict = {}
 
-        for keyword in self.keywords:
-            
-
+        for keyword in keywords:
+            print(f"Searching for keyword: {keyword}")
+            kw_dict = {}
             kw_results = collection.query(
-                query_texts=[self.query],
+                query_texts=[keyword],
                 n_results=10)
 
             output = []
@@ -161,8 +161,44 @@ class SearchEventPageTitlesTool(SearchEventPagesInput):
                     title=kw_results['metadatas'][0][i]['title'],
                     distance=kw_results['distances'][0][i]
                 ))
-            final_dict["_".join(keyword)] = output
+            
+            kw_dict["results"] = output
+            kw_dict["min_distance"] = min([res.distance for res in output])
+
+
+            final_dict["_".join(keyword.split(" "))] = kw_dict
+        print("="*30)
+        print("FINAL DICT")
+        pprint(final_dict)
         return final_dict
+    
+
+########################
+##### FINAL ACTION #####
+########################
+
+class FinalAction(BaseModel):
+    """Provide the final answer to the user
+    Returns:
+        EventDetails: The final comprehensive answer to the user's query, including event details like title, dates, location, and description.
+    """
+    action_type: Literal["finish"] = "finish"
+    think: str = Field(description="Final reasoning before providing the answer")
+    answer: str = Field(description="Final comprehensive answer to the user's query")
+    # answer: str = Field(description="Final comprehensive answer to the user's query")
+    confidence: float = Field(ge=0, le=1, description="Confidence score of the final answer (0-1)")
+
+    def execute(self) -> str:
+        """Execute the final action and return the answer.
+        
+        Returns:
+            str: Final answer to the user's query.
+        """
+        return self.answer
+
+
+AgentActions = Union[SearchEventPageTitlesTool, FinalAction]
+
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
 ####################################################################
@@ -233,9 +269,104 @@ class MyAgent:
         self.refined_query = self.user_intent.query
         self.ordered_title_keywords = sorted(self.user_intent.keywords, key=lambda x: x.confidence, reverse=True)
 
+        print("="*30)
+        print("USER KEYWORDS")
+        pprint(self.ordered_title_keywords)
+
         self.conversation_history.append({
             "role": "user",
             "content": self.refined_query
         })
 
-        
+        for step_num in range(max_steps):
+            self._log(f"\n--- Step {step_num + 1} ---")
+
+            try:
+                action = self.client.chat.completions.create(
+                    model=self.model,
+                    response_model=AgentActions,
+                    messages= self.conversation_history,
+                    max_tokens=4096
+                )
+                # pprint(action.model_dump())
+            except Exception as e:
+                self._log(f"Error during action generation: {e}")
+                return "An error occurred while processing your request."
+            
+            self._log(f"Thought: {action.think}")
+            self._log(f"Action: {action.action_type}")
+            # pprint(action.model_dump())
+
+            if action.action_type == "search_event_pages":
+                result = action.execute(keywords=[kw.keyword for kw in self.ordered_title_keywords])
+
+            else: 
+                result = action.execute()
+            # self._log(f"Result: {result}")
+
+            # Add to memory
+            self.action_history.append({
+                "step": step_num + 1,
+                "think": action.think,
+                "action_type": action.action_type,
+                "result": result
+            })
+
+            action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {result}"
+
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": action_summary + f"Result: {result}"
+            })
+
+            if isinstance(action, FinalAction):
+            # if isinstance(action, FinalActionTool):
+                self._log(f"\nFinal Answer: {action.answer}")
+                self._log(f"Confidence: {action.confidence}")
+                # return action.answer.model_dump()
+                return action.answer
+            
+            self.conversation_history.append({
+                "role": "user",
+                "content": "based on this result, what should we do next? If you have enough information, provide a final answer."
+            })
+        self._log("Reached maximum steps without final answer.")
+        self.conversation_history.append({
+            "role": "user",
+            "content": "You've reached the maximum number of steps. Please provide a final answer based on the information gathered."
+        })
+        final_action = self.client.chat.completions.create(
+            model=self.model,
+            response_model=FinalAction,
+            messages=self.conversation_history,
+            max_tokens=4096
+        )
+        print(f"Final Thought: {final_action.think}")
+        # return final_action.answer.model_dump()
+        return final_action.answer
+    
+    def get_action_summary(self) -> str:
+        """Get a summary of all actions taken"""
+        summary = "Action Summary:\n"
+        for action in self.action_history:
+            summary += f"\nStep {action['step']}: {action['action_type']}\n"
+            summary += f"  Thought: {action['think']}\n"
+            summary += f"  Result: {action['result']}\n"
+        return summary
+    
+if __name__ == "__main__":
+    
+    collection = init_collection()
+    while True:
+        user_query = input("Enter your query (or 'exit' to quit): ")
+        try:
+            if user_query.lower() == 'exit':
+                break
+            
+            agent = MyAgent(model="gpt-4.1-mini", verbose=True)
+            final_answer = agent.step(user_query)
+            agent.get_action_summary()
+            print(f"\nFinal Answer: {final_answer}")
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break    
