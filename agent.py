@@ -109,7 +109,7 @@ def extract_user_intent(user_query: str, client: instructor) -> UserIntent:
 #### SEARCH TTILE EMBEDDINGS ####
 #################################
 
-class EventPageResult(BaseModel):
+class EventTitleResult(BaseModel):
     """Represents a single search result for an event page."""
     page_id: str = Field(description="Unique identifier for the event page")
     title: str = Field(description="Title of the event page")
@@ -119,12 +119,11 @@ class SearchEventPagesOutput(BaseModel):
     """Output containing top 10 relevant event pages."""
     # confidence: float = Field(ge=0, le=1, description="Confidence score of the event page result (0-1)",
     #                     examples=[0.95, 0.85, 0.75])
-    results: List[EventPageResult] = Field(
-        description="List of top 10 relevant event pages",
-        examples=[
-            {"page_id": "event1", "title": "Concert in the Park"},
-            {"page_id": "event2", "title": "Art Exhibition Opening"}
-        ])
+    results: List[EventTitleResult] = Field(description="List of top 10 relevant event pages",
+                                            examples=[
+                                                {"page_id": "event1", "title": "Concert in the Park", 'distance': 0.123},
+                                                {"page_id": "event2", "title": "Art Exhibition Opening", 'distance': 0.1}
+                                            ])
 
 class SearchEventPagesInput(BaseModel):
     """Input for searching event pages"""
@@ -134,15 +133,23 @@ class SearchEventPagesInput(BaseModel):
     #                     examples=["pierogi", "koncert", "wystawa", "teatr", "sztuka"])
 
 class SearchEventPageTitlesTool(SearchEventPagesInput):
-    """Search for top 10 relevant event pages using title embedding similarity.
+    # """Search for top 10 relevant event pages using title embedding similarity.
+    # Returns:
+    #     SearchEventPagesOutput: Output containing top 10 relevant event pages."""
+    """Execute the search and return for 10 results using title embedding similarity.
+    Args:
+        keywords (List[str]): List of keywords to search for in event titles.
     Returns:
-        SearchEventPagesOutput: Output containing top 10 relevant event pages."""
-
-    def execute(self, keywords) -> SearchEventPagesOutput:
-        """Execute the search and return for 10 results using title embedding similarity.
-        Returns:
-            SearchEventPagesOutput: Output containing top 10 relevant event pages.
-        """
+        Dict[str, Union[float,Dict[SearchEventPagesOutput]]]: Nested dictionary with keyword as key and a dictionary of list of results as value and the smallest distance.
+    Example:
+        {'bieg': {'min_distance': 0.396332323551178,
+                    'results': [EventPageResult(page_id='biegaj_z_team_zabieganedni_00128', title='biegaj z team zabieganedni', distance=0.396332323551178),
+                                EventPageResult(page_id='bieg_po_nowe_życie_00239', title='bieg po nowe życie', distance=0.43145501613616943)
+                                ]
+                    }
+        }
+    """
+    def execute(self, keywords) -> Dict[str, Union[float,SearchEventPagesOutput]]:
         print("="*30)
         print(keywords)
         final_dict = {}
@@ -156,7 +163,7 @@ class SearchEventPageTitlesTool(SearchEventPagesInput):
 
             output = []
             for i in range(len(kw_results['ids'][0])):
-                output.append(EventPageResult(
+                output.append(EventTitleResult(
                     page_id=kw_results['ids'][0][i],
                     title=kw_results['metadatas'][0][i]['title'],
                     distance=kw_results['distances'][0][i]
@@ -172,6 +179,143 @@ class SearchEventPageTitlesTool(SearchEventPagesInput):
         pprint(final_dict)
         return final_dict
     
+
+###########################################
+############ GET EVENT DETAILS ############
+###########################################
+
+class EventDetailsStart(BaseModel):
+    """Represents the start date and time of an event."""
+    date: datetime = Field(description="The datetime extracted from the event file in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
+                        examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
+    confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
+
+
+class EventDetailsEnd(BaseModel):
+    """Represents the end date and time of an event."""
+    date: datetime = Field(description="The datetime extracted from the event file in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
+                        examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
+    confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
+
+class EventDetails(BaseModel):
+    """Represents the structured details of a single event."""
+    title: str = Field(description="The main title of the event.")
+    start_datetime: EventDetailsStart = Field(description="The start date and time of the event in ISO 8601 format.")
+    end_datetime: EventDetailsEnd = Field(description="The end date and time of the event in ISO 8601 format.")
+    location: str = Field(description="The physical location, venue, or address of the event.")
+    city: str = Field(description="The city where the event is taking place.")
+    description: str = Field(description="A detailed summary or description of the event's content.")
+    source_url: Optional[str] = Field(None, description="The source URL of the event page, if available.")
+
+
+##########################################
+########### READ FILE CONTENTS ###########
+##########################################
+
+
+class SelectEventFileInput(BaseModel):
+    """Represents the selection of an event file based on the page_id."""
+    action_type: Literal["select_event_file"] = "select_event_file"
+    page_id: str = Field(description="Unique identifier for the event page",
+                         examples=["event1", "event2", "event3"])
+    think: str = Field(description="I should select the event file based on the smallest distance measure.")
+
+
+class SelectEventFileTool(SelectEventFileInput):
+    """Execute the selection of the event file based on the page_id with the smallest distance measure.
+    
+    Args:
+        results_dict (Dict[str, Union[float, SearchEventPagesOutput]]): Dictionary containing the results of the search.
+    
+    Returns:
+        str: The page_id of the selected event file.
+    """
+
+    def execute(self, results_dict: Dict[str, Union[float, SearchEventPagesOutput]]) -> str:
+        print("="*30)
+        print("Selecting event file based on smallest distance measure.")
+        page_id = min(
+            results_dict, 
+            key=lambda x: results_dict[x]["min_distance"]
+        )
+        print(f"Selected page_id: {page_id}")
+        return page_id
+
+
+
+class ReadEventFileContentsInput(BaseModel):
+    """Input for reading event file contents"""
+    action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
+    think: str = Field(description="Why is this reading needed and what information is sought")
+    page_id: str = Field(description="Unique identifier for the event page",
+                         examples=["event1", "event2", "event3"])
+
+
+class ReadEventFileContentsOutput(BaseModel):
+    """Output containing the contents of the event file."""
+    page_id: str = Field(description="Unique identifier for the event page")
+    contents: EventDetails = Field(description="Contents of the event file")
+
+
+
+class ReadEventFileContentsTool(ReadEventFileContentsInput):
+    """Read the contents of an event file using the page_id with the smalles distance measure returned from the search_event_pages tool.
+    Args:
+        page_id (str): Unique identifier for the event page, with smallest distance measure.
+    
+    Returns:
+        ReadEventFileContentsOutput: Output containing the contents of the event file."""
+    
+    def execute(self, page_id:str, client: instructor, model: str) -> ReadEventFileContentsOutput:
+        with open(os.path.join(EVENT_DIR, f"{page_id}.md"), 'r', encoding='utf-8') as f:
+            data = f.read()
+
+        result = client.chat.completions.create(
+            model=model,
+            response_model=EventDetails,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that reads event files and extracts structured details."},
+                {"role": "user", "content": f"Read the event file with page_id: {page_id} and extract structured details."},
+                {"role": "assistant", "content": data}
+            ],
+            temperature=0.0
+        )
+        return ReadEventFileContentsOutput(
+            page_id=page_id,
+            contents=result
+        )
+
+
+
+
+
+# class ReadEventFileContentsTool(ReadEventFileContentsInput):
+#     """Read the contents of an event file based on the page_id.
+#     Returns:
+#         ReadEventFileContentsOutput: Output containing the contents of the event file."""
+    
+#     def execute(self) -> EventDetails:
+#         """Execute the reading of the event file contents.
+        
+#         Returns:
+#             ReadEventFileContentsOutput: Output containing the contents of the event file.
+#         """
+#         print("="*30)
+#         print(f"Reading event file for page_id: {self.page_id}")
+#         file_path = os.path.join(EVENT_DIR, f"{self.page_id}.md")
+#         if not os.path.exists(file_path):
+#             raise FileNotFoundError(f"Event file {file_path} does not exist.")
+        
+#         with open(file_path, 'r', encoding='utf-8') as f:
+#             data = f.read()
+        
+#         return data
+#         # return ReadEventFileContentsOutput(
+#         #     page_id=self.page_id,
+#         #     contents=data
+#         # )
+
+
 
 ########################
 ##### FINAL ACTION #####
@@ -197,7 +341,7 @@ class FinalAction(BaseModel):
         return self.answer
 
 
-AgentActions = Union[SearchEventPageTitlesTool, FinalAction]
+AgentActions = Union[SearchEventPageTitlesTool, ReadEventFileContentsTool ,FinalAction]
 
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
@@ -206,8 +350,9 @@ AgentActions = Union[SearchEventPageTitlesTool, FinalAction]
 SYSTEM_PROMPT = f"""You are a helpful assistant that helps users find information about events.
 
 You have access to the following tools:
-1. search_event_pages: Find event pages using embedding similarity search
-3. finish: Provide the final answer with all event details
+1. search_event_pages: Find event pages using embedding similarity search.
+2. read_event_file_contents: Read the contents of an event file using the page_id with the smalles distance measure returned from the search_event_pages tool.
+3. finish: Provide the final answer with all event details.
 
 Today is {datetime.now().today()}.
 
@@ -265,13 +410,13 @@ class MyAgent:
             Final answer string
             """
         
-        self.user_intent = extract_user_intent(user_query= user_query, client=self.client)
+        self.user_intent = extract_user_intent(user_query=user_query, client=self.client)
         self.refined_query = self.user_intent.query
         self.ordered_title_keywords = sorted(self.user_intent.keywords, key=lambda x: x.confidence, reverse=True)
 
-        print("="*30)
-        print("USER KEYWORDS")
-        pprint(self.ordered_title_keywords)
+        # print("="*30)
+        # print("USER KEYWORDS")
+        # pprint(self.ordered_title_keywords)
 
         self.conversation_history.append({
             "role": "user",
@@ -279,7 +424,7 @@ class MyAgent:
         })
 
         for step_num in range(max_steps):
-            self._log(f"\n--- Step {step_num + 1} ---")
+            self._log(f"\n----- Step {step_num + 1} -----\n")
 
             try:
                 action = self.client.chat.completions.create(
@@ -299,10 +444,27 @@ class MyAgent:
 
             if action.action_type == "search_event_pages":
                 result = action.execute(keywords=[kw.keyword for kw in self.ordered_title_keywords])
-
+                self.event_pages = result
+                print("="*30)
+                print("ECENT PAGES")
+                pprint(self.event_pages)
+                
+            elif action.action_type == "read_event_file_contents":
+                page_id = min(
+                    self.event_pages, 
+                    key=lambda x: self.event_pages[x]["min_distance"]
+                )
+                result = action.execute(page_id=page_id, 
+                                        client=self.client, 
+                                        model=self.model
+                                        )
+                print("="*30)
+                print("Reading event file contents for page_id:", page_id)
+                pprint(result.model_dump())
             else: 
                 result = action.execute()
-            # self._log(f"Result: {result}")
+                print("="*30)
+                self._log(f"Result: {result.model_dump()}")
 
             # Add to memory
             self.action_history.append({
@@ -365,8 +527,9 @@ if __name__ == "__main__":
             
             agent = MyAgent(model="gpt-4.1-mini", verbose=True)
             final_answer = agent.step(user_query)
-            agent.get_action_summary()
             print(f"\nFinal Answer: {final_answer}")
+            print("\n")
+            print(agent.get_action_summary())
         except KeyboardInterrupt:
             print("\nExiting...")
             break    
