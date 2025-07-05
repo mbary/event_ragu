@@ -1,0 +1,12 @@
+# URL: https://rembertow.um.warszawa.pl/-/rembart-festiwal-2025-3
+# Koncert - Janek Młynarski i Warszawskie Combo Tanceczne
+29.06.2025 19:00 - 29.06.2025 21:00
+Estrada Domu Kultury "Rembertów",   Komandosów 8,   04- 485, Warszawa
+Zapraszamy na koncert Janka Młynarskiego i Warszawskiego Combo Tanecznego!  Wydarzenie odbędzie się 29 czerwca 2025r. o godzinie 19:00 na estradzie letniej Domu Kultury “Rembertów” przy ul. Komandosów 8
+Czeka Was wyjątkowy wieczór pełen muzyki, rytmu i niezapomnianej atmosfery!
+ Wydarzenie zapewnia następujące udogodnienia 
+![Plakat promujący RembART Festiwal 2025 — kolorowy afisz z listą wydarzeń kulturalnych odbywających się od 15 czerwca do 27 lipca 2025 roku. Zawiera daty, godziny, lokalizacje i opisy koncertów oraz spektakli dla dzieci. Wśród wydarzeń znajduje się m.in. „Warzywne Show” (26 czerwca, godz. 18:00, boisko przy ul. Czwartaków 4), koncert zespołu Czerwone Gitary, spektakl „Księżniczka na ziarnku grochu” i inne atrakcje muzyczne i teatralne.](https://cdn.um.warszawa.pl/documents/50378/26216933/RembART+Festiwal+GR.png/40238425-d5c1-4cba-4ace-143e70fc54b2?version=1.0&t=1749801939462&imageThumbnail=1)
+×Zamknij galerię
+![Plakat promujący RembART Festiwal 2025 — kolorowy afisz z listą wydarzeń kulturalnych odbywających się od 15 czerwca do 27 lipca 2025 roku. Zawiera daty, godziny, lokalizacje i opisy koncertów oraz spektakli dla dzieci. Wśród wydarzeń znajduje się m.in. „Warzywne Show” (26 czerwca, godz. 18:00, boisko przy ul. Czwartaków 4), koncert zespołu Czerwone Gitary, spektakl „Księżniczka na ziarnku grochu” i inne atrakcje muzyczne i teatralne.](https://cdn.um.warszawa.pl/documents/50378/26216933/RembART+Festiwal+GR.png/40238425-d5c1-4cba-4ace-143e70fc54b2?version=1.0&t=1749801939462&imagePreview=1) 
+Plakat promujący RembArt Festiwal 2025 (png, 591KB) zdjęcie 1 z 1
+![Plakat promujący RembART Festiwal 2025 — kolorowy afisz z listą wydarzeń kulturalnych odbywających się od 15 czerwca do 27 lipca 2025 roku. Zawiera daty, godziny, lokalizacje i opisy koncertów oraz spektakli dla dzieci. Wśród wydarzeń znajduje się m.in. „Warzywne Show” (26 czerwca, godz. 18:00, boisko przy ul. Czwartaków 4), koncert zespołu Czerwone Gitary, spektakl „Księżniczka na ziarnku grochu” i inne atrakcje muzyczne i teatralne.](https://cdn.um.warszawa.pl/documents/50378/26216933/RembART+Festiwal+GR.png/40238425-d5c1-4cba-4ace-143e70fc54b2?version=1.0&t=1749801939462&imageThumbnail=1)
