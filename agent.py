@@ -1,3 +1,51 @@
+""""
+This file contains the agent class and tools for processing user queries related to events.
+Tools include:
+- UserIntent: Extracts user intent from the query, including keywords, timeframe, city, and location.
+- SearchEventPageTitlesTool: Searches for event pages using title embedding similarity.
+- ReadEventFileContentsTool: Reads the contents of an event file based on the page_id.
+- FinalAction: Provides the final answer to the user based on the event details.
+
+Tools to be implemented:
+- EvaluateEventRelevancyTool: Evaluates the relevancy of an event to the user's intent.
+- SelectEventFileTool: Selects the event file based on the page_id with the smallest distance measure. (this will be called within another tool, not by the agent directly)
+- StateManager: Manages the state of the conversation, including user intent, search results,
+  and read event pages and all other actions taken by the agent.
+- AgentActions: Union of all tools that the agent can use to process the user query. 
+    - Update with new tools as they are implemented.
+- SharedDependencies: Contains shared dependencies and configurations for the agent.
+    - chromadb: Database for storing event pages and their embeddings.
+    - instructor: Library for interacting with the OpenAI API and managing chat completions.
+    - init_collection: Function to initialize the ChromaDB collection for event pages.
+    - SYSTEM_PROMPT: System prompt for the agent, providing context and instructions for processing user queries.
+        - Other prompts that might be used for specific tools or actions.
+
+
+Update Current Tools with:
+- Execute functions for each tool that will be called by the agent:
+    - each function will take state and shared dependencies as arguments
+      and use them accordingly (select relevant data from the state, call the database, etc.)
+- Summarise function:
+    - function whose purpose is to summarise the results of the tool execution
+      which will then be added to the conversation history so that the agent is aware of the results
+      and can use it in the next step.
+            # After execution
+            result = action.execute(state=self.state)
+
+            # Use the tool's own summarize method
+            summary = f"Action: {action.action_type}
+            Think: {action.think}
+            Result: {action.summarize(result)}"
+
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": summary
+            })
+
+"""
+
+
+
 import os
 import json
 from datetime import datetime, date
@@ -91,7 +139,8 @@ You should always think step by step.
 
 
 
-def extract_user_intent(user_query: str, client: instructor) -> UserIntent:
+def extract_user_intent(user_query: str, client: instructor, 
+                        state: StateManager) -> UserIntent:
     """Extract user intent from the user query."""
 
     intent = client.chat.completions.create(
@@ -115,32 +164,12 @@ class EventTitleResult(BaseModel):
     title: str = Field(description="Title of the event page")
     distance: float = Field(description="Distance score of the similarity embedding search")
 
-class SearchEventPagesOutput(BaseModel):
-    """Output containing top 10 relevant event pages."""
-    # confidence: float = Field(ge=0, le=1, description="Confidence score of the event page result (0-1)",
-    #                     examples=[0.95, 0.85, 0.75])
-    results: List[EventTitleResult] = Field(description="List of top 10 relevant event pages",
-                                            examples=[
-                                                {"page_id": "event1", "title": "Concert in the Park", 'distance': 0.123},
-                                                {"page_id": "event2", "title": "Art Exhibition Opening", 'distance': 0.1}
-                                            ])
-
-class SearchEventPagesInput(BaseModel):
-    """Input for searching event pages"""
-    action_type: Literal["search_event_pages"] = "search_event_pages"
-    think: str = Field(description="Why is this search needed abd what information is sought")
-    # keywords: List[str] = Field(description="List of keywords infered from user query",
-    #                     examples=["pierogi", "koncert", "wystawa", "teatr", "sztuka"])
-
-class SearchEventPageTitlesTool(SearchEventPagesInput):
-    # """Search for top 10 relevant event pages using title embedding similarity.
-    # Returns:
-    #     SearchEventPagesOutput: Output containing top 10 relevant event pages."""
+class SearchEventPageTitlesTool(BaseModel):
     """Execute the search and return for 10 results using title embedding similarity.
     Args:
         keywords (List[str]): List of keywords to search for in event titles.
     Returns:
-        Dict[str, Union[float,Dict[SearchEventPagesOutput]]]: Nested dictionary with keyword as key and a dictionary of list of results as value and the smallest distance.
+        Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]: A dictionary with keywords as keys and a dictionary of results as values.
     Example:
         {'bieg': {'min_distance': 0.396332323551178,
                     'results': [EventPageResult(page_id='biegaj_z_team_zabieganedni_00128', title='biegaj z team zabieganedni', distance=0.396332323551178),
@@ -149,7 +178,15 @@ class SearchEventPageTitlesTool(SearchEventPagesInput):
                     }
         }
     """
-    def execute(self, keywords) -> Dict[str, Union[float,SearchEventPagesOutput]]:
+    think: str = Field(description="Why is this search needed abd what information is sought")
+    action_type: Literal["search_event_pages"] = "search_event_pages"
+    results: List[EventTitleResult] = Field(description="List of top 10 relevant event pages",
+                                            examples=[
+                                                {"page_id": "event1", "title": "Concert in the Park", 'distance': 0.123},
+                                                {"page_id": "event2", "title": "Art Exhibition Opening", 'distance': 0.1}
+                                            ])
+
+    def execute(self, keywords, state) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
         print("="*30)
         print(keywords)
         final_dict = {}
@@ -190,7 +227,6 @@ class EventDetailsStart(BaseModel):
                         examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
     confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
 
-
 class EventDetailsEnd(BaseModel):
     """Represents the end date and time of an event."""
     date: datetime = Field(description="The datetime extracted from the event file in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
@@ -211,7 +247,6 @@ class EventDetails(BaseModel):
 ##########################################
 ########### READ FILE CONTENTS ###########
 ##########################################
-
 
 class SelectEventFileInput(BaseModel):
     """Represents the selection of an event file based on the page_id."""
@@ -240,7 +275,7 @@ class SelectEventFileTool(SelectEventFileInput):
         )
         print(f"Selected page_id: {page_id}")
         return page_id
-
+## TODO just implemtnt finding the next file with smallest distance measure
 
 
 class ReadEventFileContentsInput(BaseModel):
@@ -342,6 +377,28 @@ class FinalAction(BaseModel):
 
 
 AgentActions = Union[SearchEventPageTitlesTool, ReadEventFileContentsTool ,FinalAction]
+
+
+
+###########################################################
+######### STATE MANAGER AND COLLECTION DEFINITION #########
+###########################################################
+
+class StateManager(BaseModel):
+    """State manager to keep track of the conversation, extracted values and actions taken."""
+    # Returned by UserIntent
+    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query")
+    
+    # Returned by SearchEventPageTitlesTool
+    search_title_results: List = Field(description="List of event pages found using title embedding similarity search",
+                                       default_factory=list)
+    
+    read_event_pages: List = Field(description="List of event pages that have been read", default_factory=list)
+    evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevancy against the user intent",
+                                        default_factory=list)
+
+
+
 
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
