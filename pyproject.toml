@@ -16,5 +16,7 @@ dependencies = [
     "lxml>=6.0.0",
     "markdownify>=1.1.0",
     "openai>=1.93.0",
+    "pydantic>=2.11.7",
     "python-dotenv>=1.1.1",
+    "verifiers[all]>=0.1.1",
 ]
