@@ -185,10 +185,9 @@ class SearchEventPageTitlesTool(BaseModel):
                                                 {"page_id": "event1", "title": "Concert in the Park", 'distance': 0.123},
                                                 {"page_id": "event2", "title": "Art Exhibition Opening", 'distance': 0.1}
                                             ])
-
-    def execute(self, keywords, state) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
-        print("="*30)
-        print(keywords)
+    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
+        
+        keywords = state.user_intent.keywords
         final_dict = {}
 
         for keyword in keywords:
@@ -211,10 +210,26 @@ class SearchEventPageTitlesTool(BaseModel):
 
 
             final_dict["_".join(keyword.split(" "))] = kw_dict
-        print("="*30)
-        print("FINAL DICT")
-        pprint(final_dict)
+        # print("="*30)
+        # print("FINAL DICT")
+        # pprint(final_dict)
+
+        # Update current stete
+        state.search_title_results.append(final_dict)
+
         return final_dict
+    
+    def summarise(self, results: Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]) -> str:
+        """Summarize the search results."""
+        keywords = list(results.keys())
+
+        summary = f'To search for event pages most relevant to the user query, I used the following keywords: {", ".join(keywords)}.\n'
+        summary += "Each keyword yielded the following results:\n"
+        for keyword in keywords:
+            summary += f"Keyword: {keyword}\n"
+            summary += f"Minimum Distance: {results[keyword]['min_distance']}\n"
+            summary += f"File count: {len(results[keyword]['results'])}\n"
+        return summary
     
 
 ###########################################
@@ -278,30 +293,19 @@ class SelectEventFileTool(SelectEventFileInput):
 ## TODO just implemtnt finding the next file with smallest distance measure
 
 
-class ReadEventFileContentsInput(BaseModel):
-    """Input for reading event file contents"""
-    action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
-    think: str = Field(description="Why is this reading needed and what information is sought")
-    page_id: str = Field(description="Unique identifier for the event page",
-                         examples=["event1", "event2", "event3"])
-
-
-class ReadEventFileContentsOutput(BaseModel):
-    """Output containing the contents of the event file."""
-    page_id: str = Field(description="Unique identifier for the event page")
-    contents: EventDetails = Field(description="Contents of the event file")
-
-
-
-class ReadEventFileContentsTool(ReadEventFileContentsInput):
+class ReadEventFileContentsTool(BaseModel):
     """Read the contents of an event file using the page_id with the smalles distance measure returned from the search_event_pages tool.
     Args:
         page_id (str): Unique identifier for the event page, with smallest distance measure.
     
     Returns:
-        ReadEventFileContentsOutput: Output containing the contents of the event file."""
-    
-    def execute(self, page_id:str, client: instructor, model: str) -> ReadEventFileContentsOutput:
+        event_details: Output containing the extracted structured details of the event.
+    Example:
+    """
+    think: str = Field(description="Why is this reading needed and what information is sought")
+    action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
+    event_details: EventDetails = Field(description="Details of the read event")
+    def execute(self, page_id:str, client: instructor, model: str):
         with open(os.path.join(EVENT_DIR, f"{page_id}.md"), 'r', encoding='utf-8') as f:
             data = f.read()
 
@@ -399,6 +403,8 @@ class StateManager(BaseModel):
 
 
 
+class DependencyManager(BaseModel):
+    pass
 
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
