@@ -25,6 +25,9 @@ Update Current Tools with:
 - Execute functions for each tool that will be called by the agent:
     - each function will take state and shared dependencies as arguments
       and use them accordingly (select relevant data from the state, call the database, etc.)
+    - include error handling for cases when the state is not set up correctly which ensures that the agent
+        can handle unexpected situations gracefully.
+        
 - Summarise function:
     - function whose purpose is to summarise the results of the tool execution
       which will then be added to the conversation history so that the agent is aware of the results
@@ -41,7 +44,7 @@ Update Current Tools with:
                 "role": "assistant",
                 "content": summary
             })
-
+    - include error handling 
 """
 
 
@@ -180,13 +183,15 @@ class SearchEventPageTitlesTool(BaseModel):
     """
     think: str = Field(description="Why is this search needed abd what information is sought")
     action_type: Literal["search_event_pages"] = "search_event_pages"
-    results: List[EventTitleResult] = Field(description="List of top 10 relevant event pages",
-                                            examples=[
-                                                {"page_id": "event1", "title": "Concert in the Park", 'distance': 0.123},
-                                                {"page_id": "event2", "title": "Art Exhibition Opening", 'distance': 0.1}
-                                            ])
+
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
-        
+
+        if not state.user_intent:
+            return {"error": "User intent not found in state. Please extract user intent first using extract_user_intent tool.",
+                    "suggested_action": "extract_user_intent"}
+        elif not state.user_intent.keywords:
+            return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
+                    "suggested_action": "extract_user_intent"}
         keywords = state.user_intent.keywords
         final_dict = {}
 
@@ -222,6 +227,9 @@ class SearchEventPageTitlesTool(BaseModel):
     def summarise(self, results: Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]) -> str:
         """Summarize the search results."""
         keywords = list(results.keys())
+
+        if "error" in results:
+            return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
         summary = f'To search for event pages most relevant to the user query, I used the following keywords: {", ".join(keywords)}.\n'
         summary += "Each keyword yielded the following results:\n"
