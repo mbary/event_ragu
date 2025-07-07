@@ -220,7 +220,7 @@ class SearchEventPageTitlesTool(BaseModel):
         # pprint(final_dict)
 
         # Update current stete
-        state.search_title_results.append(final_dict)
+        state.search_title_results.update(final_dict)
 
         return final_dict
     
@@ -299,15 +299,29 @@ class SelectEventFileTool(SelectEventFileInput):
         str: The page_id of the selected event file.
     """
 
-    def execute(self, results_dict: Dict[str, Union[float, SearchEventPagesOutput]]) -> str:
+    def execute(self, state: StateManager, deps: DependencyManager) -> str:
         print("="*30)
         print("Selecting event file based on smallest distance measure.")
+
+        if not state.search_title_results:
+            return {"error": "No search results found. Please perform a search first using search_event_pages.",
+                    "suggested_action": "search_event_pages"}
+        
+        if not state.current_search_keyword:
+            state.current_search_keyword = min(state.search_title_results, key=lambda x: state.search_title_results[x]["min_distance"])
+
+        page_id = min(
+            state.search_title_results[state.current_search_keyword]["results"],
+            key=lambda x: x.distance
+        ).page_id
+
         page_id = min(
             results_dict, 
             key=lambda x: results_dict[x]["min_distance"]
         )
         print(f"Selected page_id: {page_id}")
         return page_id
+    
 ## TODO just implemtnt finding the next file with smallest distance measure
 
 
@@ -575,9 +589,13 @@ class StateManager(BaseModel):
     user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query")
     
     # Returned by SearchEventPageTitlesTool
-    search_title_results: List = Field(description="List of event pages found using title embedding similarity search",
-                                       default_factory=list)
-    
+    search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
+                                       default_factory=dict)
+    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages")
+    exhausted_search_keywords: List[str] = Field(description="List of keywords that have been searched for and exhausted",
+                                                 default_factory=list)
+    selected_page_id: Optional[str] = Field(description="The current page_id being processed")
+
     read_event_pages: List = Field(description="List of event pages that have been read", default_factory=list)
     evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
