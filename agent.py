@@ -635,7 +635,8 @@ class FinalAction(BaseModel):
         return self.answer
 
 
-AgentActions = Union[SearchEventPageTitlesTool, ReadEventFileContentsTool ,FinalAction]
+AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEventFileTool,
+                     ReadEventFileTool, ReadEventFileTool, EvaluateEventTool, FinalAction]
 
 
 
