@@ -35,10 +35,10 @@ Update Current Tools with:
             # After execution
             result = action.execute(state=self.state)
 
-            # Use the tool's own summarize method
+            # Use the tool's own summarise method
             summary = f"Action: {action.action_type}
             Think: {action.think}
-            Result: {action.summarize(result)}"
+            Result: {action.summarise(result)}"
 
             self.conversation_history.append({
                 "role": "assistant",
@@ -225,7 +225,7 @@ class SearchEventPageTitlesTool(BaseModel):
         return final_dict
     
     def summarise(self, results: Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]) -> str:
-        """Summarize the search results."""
+        """summarise the search results."""
         keywords = list(results.keys())
 
         if "error" in results:
@@ -397,7 +397,7 @@ class ReadEventFileTool(BaseModel):
             return {"error": f"Failed to read or parse event file: {str(e)}",
                     "suggested_action": "No idea mate, think of something"} ##TODO correct this XD 
     
-    def summarize(self, result: Dict[str, Any]) -> str:
+    def summarise(self, result: Dict[str, Any]) -> str:
         """Create conversation summary"""
         if "error" in result:
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
@@ -498,7 +498,7 @@ class EvaluateEventTool(BaseModel):
         except Exception as e:
             return {"error": f"Evaluation failed: {str(e)}"}
     
-    def summarize(self, result: Dict[str, Any]) -> str:
+    def summarise(self, result: Dict[str, Any]) -> str:
         """Create conversation summary"""
         if "error" in result:
             return f"Error: {result['error']}"
