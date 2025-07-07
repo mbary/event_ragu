@@ -52,7 +52,7 @@ Update Current Tools with:
 import os
 import json
 from datetime import datetime, date
-from typing import Union, List, Literal, Optional, Dict, Any
+from typing import Union, List, Literal, Optional, Dict, Any, Set
 from collections import OrderedDict
 
 import chromadb
@@ -98,9 +98,8 @@ class UserIntent(BaseModel):
         description="A thought process or reasoning behind the user's intent extraction.",
         examples=["What does the user intend to do?"])
     
-    query: str = Field(description="A refined user query.")
-
     action_type: Literal["extract_user_intent"] = "extract_user_intent"
+    query_refined: str = Field(description="A refined user query.")
 
     timeframe: UserIntentDateTime = Field(description="The timeframe for the event search", 
                                           examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
@@ -119,42 +118,64 @@ class UserIntent(BaseModel):
                                               max_length=5, 
                                               min_length=1)
 
+class ExtractUserIntentTool(BaseModel):
+    """Extract user intent from the user query.
+    
+    Args:
+        user_query (str): The user's query to extract intent from.
+    
+    Returns:
+        UserIntent: The extracted user intent containing keywords, timeframe, city, and location.
+    """
+    think: str = Field(description="Why is this extraction needed and what information is sought")
+    action_type: Literal["extract_user_intent"] = "extract_user_intent"
 
+    def execute(self, state: StateManager, deps: DependencyManager) -> UserIntent:
+        """Extract user intent from the user query."""
 
-SYSTEM_PROMPT_INTENT_EXTRACTION = f"""You are a world-class expert at extracting user intent from the user query in a form of unstructured text.
+        SYSTEM_PROMPT_INTENT_EXTRACTION = f"""You are a world-class expert at extracting user intent from the user query in a form of unstructured text.
 
-Current date is {date.today().isoformat()}.
+        Current date is {date.today().isoformat()}.
 
-Returns:
-- think: A thought process or reasoning behind the user's intent extraction.
-- query: A refined user query.
-- action_type: The type of action to be performed, which is always "extract_user_intent".
-- timeframe: The timeframe for the event search, represented as a datetime object in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).
-- city: The city where the user wants to find events, represented as a string.
-- location: The location where the user wants to find events, represented as a string.
-- keywords: A list of keywords, strictly related to the users query.
+        Returns:
+        - think: A thought process or reasoning behind the user's intent extraction.
+        - query: A refined user query.
+        - action_type: The type of action to be performed, which is always "extract_user_intent".
+        - timeframe: The timeframe for the event search, represented as a datetime object in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).
+        - city: The city where the user wants to find events, represented as a string.
+        - location: The location where the user wants to find events, represented as a string.
+        - keywords: A list of keywords, strictly related to the users query.
 
-If no the specified datetime is vague, always relate it to the current date.
-All your responses **MUST** be in Polish language.
-You should always think step by step.
-"""
+        If no the specified datetime is vague, always relate it to the current date.
+        All your responses **MUST** be in Polish language.
+        You should always think step by step.
+        """
 
+        user_query = state.original_query
+        
+        intent = deps.client.chat.completions.create(
+            model="gpt-4.1-mini",
+            response_model=UserIntent,
+            messages=[
+                {"role":"system", "content": SYSTEM_PROMPT_INTENT_EXTRACTION},
+                {"role": "user", "content": user_query}
+            ],
+            temperature=0.0)
+        return intent
+    
+    def summarise(self, result: UserIntent) -> str:
+        """Create action summary"""
+        if not result:
+            return {"error": "No user intent extracted. Please check the user query."}
+        
+        summary = f"Think: {result.think}\n"
+        summary += f"Extracted user intent:\n"
+        summary += f"Timeframe: {result.timeframe.timeframe.isoformat()}\n"
+        summary += f"City: {result.city}\n"
+        summary += f"Location: {result.location}\n"
+        summary += f"Refined User Query: {result.query_refined}\n"
 
-
-
-def extract_user_intent(user_query: str, client: instructor, 
-                        state: StateManager) -> UserIntent:
-    """Extract user intent from the user query."""
-
-    intent = client.chat.completions.create(
-        model="gpt-4.1-mini",
-    response_model=UserIntent,
-    messages=[
-        {"role":"system", "content": SYSTEM_PROMPT_INTENT_EXTRACTION},
-        {"role": "user", "content": user_query}
-    ],
-    temperature=0.0)
-    return intent
+        return summary
 
 
 #################################
@@ -280,16 +301,7 @@ class EventDetails(BaseModel):
 ##########################################
 ########### READ FILE CONTENTS ###########
 ##########################################
-
-class SelectEventFileInput(BaseModel):
-    """Represents the selection of an event file based on the page_id."""
-    action_type: Literal["select_event_file"] = "select_event_file"
-    page_id: str = Field(description="Unique identifier for the event page",
-                         examples=["event1", "event2", "event3"])
-    think: str = Field(description="I should select the event file based on the smallest distance measure.")
-
-
-class SelectEventFileTool(SelectEventFileInput):
+class SelectEventFileTool(BaseModel):
     """Execute the selection of the event file based on the page_id with the smallest distance measure.
     
     Args:
@@ -298,6 +310,8 @@ class SelectEventFileTool(SelectEventFileInput):
     Returns:
         str: The page_id of the selected event file.
     """
+    think: str = Field(description="I should select the event file based on the smallest distance measure.")
+    action_type: Literal["select_event_file"] = "select_event_file"
 
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
         print("="*30)
@@ -310,18 +324,41 @@ class SelectEventFileTool(SelectEventFileInput):
         if not state.current_search_keyword:
             state.current_search_keyword = min(state.search_title_results, key=lambda x: state.search_title_results[x]["min_distance"])
 
-        page_id = min(
-            state.search_title_results[state.current_search_keyword]["results"],
-            key=lambda x: x.distance
-        ).page_id
+        state.selected_page_id = self._get_page_id(state.current_search_keyword, state)
 
-        page_id = min(
-            results_dict, 
-            key=lambda x: results_dict[x]["min_distance"]
-        )
-        print(f"Selected page_id: {page_id}")
-        return page_id
+        if not state.selected_page_id:
+            state.exhausted_search_keywords.append(state.current_search_keyword)
+            state.current_search_keyword = self._get_next_keyword(state)
+
+            if not state.current_search_keyword:
+                return {"error": "No more keywords to search. Please refine your query or try again later.",
+                        "suggested_action": "final_action or extract_user_intent"}
+
+        return state.selected_page_id
     
+    def summarise(self, result: str) -> str:
+        """Create action summary"""
+        if "error" in result:
+            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
+        
+        return f"Selected event file with page_id: {result}"
+    
+    def _get_page_id(self, keyword: str, state: StateManager) -> str:
+        """Get the page_id of the selected event file."""
+        try:
+            page_id = min([res for res in state.search_title_results[keyword]["results"] if res.page_id not in state.read_event_pages],
+                        key=lambda x: x.distance).page_id
+
+            return page_id
+        except AttributeError:
+            return None
+        
+    def _get_next_keyword(self, state: StateManager) -> str:
+        state.exhausted_search_keywords.add(state.current_search_keyword)
+        keyword = min((key for key in state.search_title_results if key not in state.exhausted_search_keywords), 
+                                  key=lambda x: state.search_title_results[x]["min_distance"])
+
+        return keyword
 ## TODO just implemtnt finding the next file with smallest distance measure
 
 
@@ -586,14 +623,17 @@ AgentActions = Union[SearchEventPageTitlesTool, ReadEventFileContentsTool ,Final
 class StateManager(BaseModel):
     """State manager to keep track of the conversation, extracted values and actions taken."""
     # Returned by UserIntent
+    
+    original_query: Optional[str] = Field(description="The original user query that initiated the conversation")
+
     user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query")
     
     # Returned by SearchEventPageTitlesTool
     search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
                                        default_factory=dict)
     current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages")
-    exhausted_search_keywords: List[str] = Field(description="List of keywords that have been searched for and exhausted",
-                                                 default_factory=list)
+    exhausted_search_keywords: Set[str] = Field(description="List of keywords that have been searched for and exhausted",
+                                                 default_factory=set)
     selected_page_id: Optional[str] = Field(description="The current page_id being processed")
 
     read_event_pages: List = Field(description="List of event pages that have been read", default_factory=list)
@@ -603,7 +643,8 @@ class StateManager(BaseModel):
 
 
 class DependencyManager(BaseModel):
-    pass
+    """A class to manage shared dependencies and configurations for the agent."""
+    client: instructor.Client = Field(description="The instructor client used for LLM interactions")
 
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
