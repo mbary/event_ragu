@@ -257,14 +257,24 @@ class EventDetailsEnd(BaseModel):
     confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
 
 class EventDetails(BaseModel):
-    """Represents the structured details of a single event."""
-    title: str = Field(description="The main title of the event.")
-    start_datetime: EventDetailsStart = Field(description="The start date and time of the event in ISO 8601 format.")
-    end_datetime: EventDetailsEnd = Field(description="The end date and time of the event in ISO 8601 format.")
-    location: str = Field(description="The physical location, venue, or address of the event.")
-    city: str = Field(description="The city where the event is taking place.")
-    description: str = Field(description="A detailed summary or description of the event's content.")
-    source_url: Optional[str] = Field(None, description="The source URL of the event page, if available.")
+    """Structured event information extracted from file"""
+    title: str = Field(description="Event title")
+    event_type: str = Field(description="Type of event (concert, exhibition, theater, festival, workshop, etc.)")
+    
+    start_datetime: EventDetailsStart
+    end_datetime: EventDetailsEnd
+    
+    location: str = Field(description="Venue or specific location")
+    city: str = Field(description="City where event takes place")
+    district: Optional[str] = Field(description="District or neighborhood if mentioned")
+    
+    description: str = Field(description="Full event description")
+    summary: str = Field(description="Brief 1-2 sentence summary of the event")
+    
+    target_audience: Optional[str] = Field(description="Who this event is for (if specified)")
+    price_info: Optional[str] = Field(description="Ticket/entry price information")
+    
+    source_url: Optional[str] = Field(None, description="Event website or ticket link")
 
 
 ##########################################
