@@ -13,7 +13,7 @@ Tools to be implemented:
   and read event pages and all other actions taken by the agent.
 - AgentActions: Union of all tools that the agent can use to process the user query. 
     - Update with new tools as they are implemented.
-- SharedDependencies: Contains shared dependencies and configurations for the agent.
+- DependencyManager: Contains shared dependencies and configurations for the agent.
     - chromadb: Database for storing event pages and their embeddings.
     - instructor: Library for interacting with the OpenAI API and managing chat completions.
     - init_collection: Function to initialize the ChromaDB collection for event pages.
@@ -475,7 +475,14 @@ class ReadEventFileTool(BaseModel):
 class EventEvaluation(BaseModel):
     """Structured evaluation result"""
     matches: bool = Field(description="Overall match determination")
-    match_confidence: float = Field(ge=0, le=1, description="Confidence score 0-1")
+    match_confidence: float = Field(ge=0, le=1, 
+                                    description="""Confidence score 0-1 based on:
+                                    1.0 = Perfect match (all criteria met)
+                                    0.8-0.9 = Strong match (minor differences like date off by a few days)
+                                    0.6-0.7 = Good match (one criterion off, like different district)
+                                    0.4-0.5 = Partial match (multiple criteria differ but same category)
+                                    0.2-0.3 = Weak match (same city but wrong type/date)
+                                    0.0-0.1 = No match (completely different)""")
     
     date_evaluation: str = Field(description="Evaluation of date match")
     date_matches: bool
@@ -564,9 +571,16 @@ class EvaluateEventTool(BaseModel):
             result["event_title"] = state.event_details['parsed']['title']
 
             state.last_evaluation = result
-            if not result["matches"]:
-                state.evaluated_page_ids.append(state.event_details["page_id"])
-            
+            state.evaluated_page_ids.append(state.event_details["page_id"])
+            state.evaluation_history.append({
+                                            "page_id": state.event_details["page_id"],
+                                            "title": event["title"],
+                                            "matches": result["matches"],
+                                            "confidence": result["confidence"],
+                                            "reasons": result.get("reasons", []),
+                                            "date": event["start_datetime"]["date"],
+                                            "location": f"{event['location']}, {event['city']}"
+                                            })
             return result
             
         except Exception as e:
@@ -615,24 +629,342 @@ class EvaluateEventTool(BaseModel):
 ##### FINAL ACTION #####
 ########################
 
-class FinalAction(BaseModel):
-    """Provide the final answer to the user
-    Returns:
-        EventDetails: The final comprehensive answer to the user's query, including event details like title, dates, location, and description.
-    """
-    action_type: Literal["finish"] = "finish"
-    think: str = Field(description="Final reasoning before providing the answer")
-    answer: str = Field(description="Final comprehensive answer to the user's query")
-    # answer: str = Field(description="Final comprehensive answer to the user's query")
-    confidence: float = Field(ge=0, le=1, description="Confidence score of the final answer (0-1)")
+# class FinalAction(BaseModel):
+#     """Provide the final answer to the user
+#     Returns:
+#         EventDetails: The final comprehensive answer to the user's query, including event details like title, dates, location, and description.
+#     """
+#     action_type: Literal["finish"] = "finish"
+#     think: str = Field(description="Final reasoning before providing the answer")
+#     answer: str = Field(description="Final comprehensive answer to the user's query")
+#     # answer: str = Field(description="Final comprehensive answer to the user's query")
+#     confidence: float = Field(ge=0, le=1, description="Confidence score of the final answer (0-1)")
 
-    def execute(self) -> str:
-        """Execute the final action and return the answer.
+#     def execute(self) -> str:
+#         """Execute the final action and return the answer.
         
-        Returns:
-            str: Final answer to the user's query.
-        """
-        return self.answer
+#         Returns:
+#             str: Final answer to the user's query.
+#         """
+#         return self.answer
+
+class FinalAction(BaseModel):
+    """Provide the final answer based on all gathered information.
+    
+    Can handle:
+    - Successfully found matching event(s)
+    - No matches found (with explanation)
+    - Partial matches with caveats
+    - Multiple matching events
+    """
+    action_type: Literal["final_answer"] = "final_answer"
+    think: str = Field(description="Reasoning about what type of answer to provide")
+    answer_type: Literal["found", "not_found", "partial_match", "multiple_matches"] = Field(
+        description="Type of answer to generate based on search results"
+    )
+    include_alternatives: bool = Field(
+        default=False,
+        description="Whether to mention other events that were close matches"
+    )
+    
+    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
+        """Generate comprehensive answer from collected state."""
+        
+        has_match = state.last_evaluation and state.last_evaluation.get("matches", False)
+        has_event_details = state.event_details is not None
+        num_evaluated = len(state.evaluated_page_ids)
+        
+        if self.answer_type == "found" and not has_match:
+            return {"error": "Cannot provide 'found' answer without a matching event"}
+        
+        if self.answer_type == "found" and not has_event_details:
+            return {"error": "Cannot provide 'found' answer without event details"}
+        
+        if self.answer_type == "found":
+            answer = self._build_found_answer(state)
+            confidence = state.last_evaluation.get("confidence", 0.8)
+            
+        elif self.answer_type == "not_found":
+            answer = self._build_not_found_answer(state, num_evaluated)
+            confidence = 0.9  
+            
+        elif self.answer_type == "partial_match":
+            if not has_event_details:
+                answer = self._build_fallback_answer(state)
+                confidence = 0.3
+            else:
+                answer = self._build_partial_match_answer(state)
+                confidence = state.last_evaluation.get("confidence", 0.5) if state.last_evaluation else 0.5
+            
+        elif self.answer_type == "multiple_matches":
+            answer = self._build_multiple_matches_answer(state)
+            confidence = 0.85
+            
+        else:
+            answer = self._build_fallback_answer(state)
+            confidence = 0.3
+        
+        return {
+            "final_answer": answer,
+            "answer_type": self.answer_type,
+            "search_completeness": confidence,
+            "events_evaluated": num_evaluated,
+            "has_match": has_match,
+            "search_keywords": [kw["keyword"] for kw in state.user_intent.get("keywords", [])] if state.user_intent else []
+        }
+    
+    def _build_found_answer(self, state: StateManager) -> str:
+        """Build answer for successfully found event."""
+        event = state.event_details["parsed"]
+        evaluation = state.last_evaluation
+        
+        answer_parts = [f"I found a great match for you!\n\n",
+                        f"**{event['title']}**\n",
+                        f"Date: {self._format_date(event['start_datetime']['date'])}\n",
+                        f"Location: {event['location']}, {event['city']}"]
+        
+        if event.get('district'):
+            answer_parts.append(f" ({event['district']})")
+        answer_parts.append("\n")
+        
+        answer_parts.append(f"Type: {event['event_type']}\n")
+    
+        if event.get('price_info'):
+            answer_parts.append(f"Price: {event['price_info']}\n")
+        
+        answer_parts.append(f"\nDescription:\n{event.get('summary', event['description'][:200])}...\n")
+        
+        if evaluation:
+            answer_parts.append(f"\nWhy this matches your request:\n{evaluation.get('overall_reasoning', 'Matches your criteria')}\n")
+        
+        if event.get('source_url'):
+            answer_parts.append(f"\nMore info: {event['source_url']}")
+        
+        return "".join(answer_parts)
+    
+    def _build_not_found_answer(self, state: StateManager, num_evaluated: int) -> str:
+        """Build answer when no matches found."""
+        intent = state.user_intent
+        
+        answer_parts = [
+            "I couldn't find any events that match your specific requirements.\n\n",
+            f"What I was looking for:\n"
+        ]
+        
+        if intent:
+            keywords = [kw["keyword"] for kw in intent.get("keywords", [])]
+            answer_parts.append(f"- Keywords: {', '.join(keywords)}\n")
+            answer_parts.append(f"- Location: {intent.get('city', 'Not specified')}\n")
+            
+            timeframe = intent.get('timeframe', {})
+            if isinstance(timeframe, dict) and 'timeframe' in timeframe:
+                answer_parts.append(f"- Date: Around {timeframe['timeframe']}\n")
+            else:
+                answer_parts.append(f"- Date: Not specified\n")
+        
+        answer_parts.append(f"\nI checked {num_evaluated} events but none matched all your criteria.\n")
+        
+        # Add common mismatch reasons if we have evaluation history
+        if state.last_evaluation and not state.last_evaluation.get("matches"):
+            answer_parts.append(f"\nLast event didn't match because:\n")
+            answer_parts.append(f"{state.last_evaluation.get('overall_reasoning', 'Criteria mismatch')}\n")
+        
+        answer_parts.append("\nSuggestions:\n")
+        answer_parts.append("- Try broader keywords or different terms\n")
+        answer_parts.append("- Consider nearby dates or flexible timing\n")
+        answer_parts.append("- Check neighboring cities or districts\n")
+
+        if self.include_alternatives:
+            alternatives = self._get_top_alternatives(state, limit=3, min_confidence=0.2)
+            if alternatives:
+                answer_parts.append("\n📋 Closest matches (though not ideal):\n")
+                for i, alt in enumerate(alternatives, 1):
+                    answer_parts.append(
+                        f"{i}. **{alt['title']}** (confidence: {alt['confidence']:.0%})\n"
+                        f"    {alt['date']} 📍 {alt['location']}\n"
+                        f"    {alt['match_summary']}\n\n"
+                    )
+            else:
+                answer_parts.append("\n(No alternatives met even the minimum criteria)\n")
+ 
+        
+        return "".join(answer_parts)
+    
+    def _build_partial_match_answer(self, state: StateManager) -> str:
+        """Build answer for partial matches."""
+        event = state.event_details["parsed"]
+        evaluation = state.last_evaluation or {}
+        
+        answer_parts = [
+            "I found an event that partially matches your requirements:\n\n",
+            f"**{event['title']}**\n",
+            f"{self._format_date(event['start_datetime']['date'])}\n",
+            f"{event['location']}, {event['city']}"
+        ]
+        
+        if event.get('district'):
+            answer_parts.append(f" ({event['district']})")
+        answer_parts.append("\n\n")
+        
+        answer_parts.append(f"Match Details:\n")
+        
+        if evaluation:
+            # Show what matched and what didn't
+            if evaluation.get('date_matches'):
+                answer_parts.append("✅ Date matches your request\n")
+            else:
+                answer_parts.append("❌ Date doesn't match perfectly\n")
+                
+            if evaluation.get('location_matches'):
+                answer_parts.append("✅ Location is correct\n")
+            else:
+                answer_parts.append("❌ Different location than requested\n")
+                
+            if evaluation.get('type_matches'):
+                answer_parts.append("✅ Event type matches\n")
+            else:
+                answer_parts.append("❌ Different type of event\n")
+            
+            answer_parts.append(f"\nOverall Assessment:\n{evaluation.get('overall_reasoning', 'Partial match to your criteria')}\n")
+            answer_parts.append(f"Confidence: {evaluation.get('confidence', 0.5):.0%}\n")
+        
+        if event.get('price_info'):
+            answer_parts.append(f"\nPrice: {event['price_info']}\n")
+            
+        answer_parts.append(f"\nAbout: {event.get('summary', event['description'][:150])}...\n")
+
+        if self.include_alternatives:
+            # Get alternatives with similar or better confidence
+            current_confidence = state.last_evaluation.get("confidence", 0.5)
+            alternatives = self._get_top_alternatives(
+                state, 
+                limit=2, 
+                min_confidence=current_confidence - 0.2 
+            )
+            
+            if alternatives:
+                answer_parts.append("\n📋 Similar events to consider:\n")
+                for alt in alternatives:
+                    comparison = "better" if alt['confidence'] > current_confidence else "similar"
+                    answer_parts.append(
+                        f"- **{alt['title']}** ({comparison} match: {alt['confidence']:.0%})\n"
+                        f"  {alt['date']} at {alt['location']}\n"
+                    )
+            
+        return "".join(answer_parts)
+    
+    def _get_top_alternatives(self, state: SharedState, limit: int = 3, min_confidence: float = 0.3) -> List[Dict]:
+        """Get top alternative events based on evaluation confidence scores."""
+        
+        if not state.evaluation_history:
+            return []
+        
+        alternatives = []
+        for eval_record in state.evaluation_history:
+            # Skip if it was already selected as the main result
+            if state.event_details and eval_record["page_id"] == state.event_details["page_id"]:
+                continue
+                
+            # Only include if above minimum confidence threshold
+            if eval_record["confidence"] >= min_confidence:
+                alternatives.append({
+                    "page_id": eval_record["page_id"],
+                    "title": eval_record["title"],
+                    "confidence": eval_record["confidence"],
+                    "date": eval_record.get("date", "Date TBD"),
+                    "location": eval_record.get("location", "Location TBD"),
+                    "match_summary": self._summarize_match_quality(eval_record)
+                })
+        
+        alternatives.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        return alternatives[:limit]
+    
+    def _summarize_match_quality(self, eval_record: Dict) -> str:
+        """Create a brief summary of why this is a good/poor match."""
+        confidence = eval_record["confidence"]
+        reasons = eval_record.get("reasons", [])
+        
+        if confidence >= 0.8:
+            return "Strong match - minor differences only"
+        elif confidence >= 0.6:
+            if reasons:
+                return f"Good match - {reasons[0]}"
+            return "Good match with some differences"
+        elif confidence >= 0.4:
+            if reasons:
+                return f"Partial match - {'; '.join(reasons[:2])}"
+            return "Partial match"
+        else:
+            return "Weak match - significantly different"
+
+    def _build_multiple_matches_answer(self, state: StateManager) -> str:
+        """Build answer when multiple events match."""
+        # This would need enhanced state tracking for multiple matches
+        # For now, provide a template that could be expanded
+        answer_parts = [ ##TODO to be finished
+            "I found multiple events that match your criteria! 🎊\n\n"
+        ]
+        
+        # If we tracked multiple matches in state, we'd list them here
+        if state.event_details:
+            event = state.event_details["parsed"]
+            answer_parts.append(f"Here's one great option:\n\n")
+            answer_parts.append(f"**{event['title']}**\n")
+            answer_parts.append(f"{self._format_date(event['start_datetime']['date'])}\n")
+            answer_parts.append(f"{event['location']}, {event['city']}\n")
+            
+            answer_parts.append(f"\n(Additional matching events would be listed here)\n")
+        
+        answer_parts.append("\nWould you like details on any specific event?")
+        
+        return "".join(answer_parts)
+    
+    def _build_fallback_answer(self, state: StateManager) -> str:
+        """Fallback for unexpected states."""
+        parts = [
+            "I encountered an issue while searching for events.\n\n"
+        ]
+        
+        if state.user_intent:
+            keywords = [kw["keyword"] for kw in state.user_intent.get("keywords", [])]
+            parts.append(f"I was searching for: {', '.join(keywords)}\n")
+        
+        if state.evaluated_page_ids:
+            parts.append(f"I checked {len(state.evaluated_page_ids)} events\n")
+        
+        parts.append("\nPlease try rephrasing your request or being more specific about what you're looking for.")
+        
+        return "".join(parts)
+    
+    def _format_date(self, date_str: str) -> str:
+        """Format date nicely for display."""
+        try:
+            from datetime import datetime
+            date = datetime.fromisoformat(date_str)
+            if date.hour != 0 or date.minute != 0:
+                return date.strftime("%A, %B %d, %Y at %I:%M %p")
+            else:
+                return date.strftime("%A, %B %d, %Y")
+        except:
+            return date_str
+    
+    def summarize(self, result: Dict[str, Any]) -> str:
+        """Create conversation summary."""
+        answer_type = result.get("answer_type", "unknown")
+        confidence = result.get("confidence", 0)
+        has_match = result.get("has_match", False)
+        
+        if answer_type == "found":
+            return f"✅ Provided matching event (confidence: {confidence:.0%})"
+        elif answer_type == "not_found":
+            return f"❌ No matches found after checking {result.get('events_evaluated', 0)} events"
+        elif answer_type == "partial_match":
+            return f"⚠️ Provided partial match (confidence: {confidence:.0%})"
+        elif answer_type == "multiple_matches":
+            return f"🎊 Found multiple matching events"
+        else:
+            return "Provided final answer"
 
 
 AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEventFileTool,
@@ -665,6 +997,10 @@ class StateManager(BaseModel):
     evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
     last_evaluation: Optional[EventEvaluation] = Field(description="The last evaluation result of the event against user intent")
+    evaluation_history: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="All evaluated events with details and confidence scores"
+    )
 
 
 
