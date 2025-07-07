@@ -7,7 +7,7 @@ Tools include:
 - FinalAction: Provides the final answer to the user based on the event details.
 
 Tools to be implemented:
-- EvaluateEventRelevancyTool: Evaluates the relevancy of an event to the user's intent.
+- EvaluateEventRelevanceTool: Evaluates the relevance of an event to the user's intent.
 - SelectEventFileTool: Selects the event file based on the page_id with the smallest distance measure. (this will be called within another tool, not by the agent directly)
 - StateManager: Manages the state of the conversation, including user intent, search results,
   and read event pages and all other actions taken by the agent.
@@ -27,7 +27,7 @@ Update Current Tools with:
       and use them accordingly (select relevant data from the state, call the database, etc.)
     - include error handling for cases when the state is not set up correctly which ensures that the agent
         can handle unexpected situations gracefully.
-        
+
 - Summarise function:
     - function whose purpose is to summarise the results of the tool execution
       which will then be added to the conversation history so that the agent is aware of the results
@@ -333,8 +333,96 @@ class ReadEventFileContentsTool(BaseModel):
         )
 
 
+class EventEvaluation(BaseModel):
+    """Structured evaluation result"""
+    matches: bool = Field(description="Overall match determination")
+    confidence: float = Field(ge=0, le=1, description="Confidence score 0-1")
+    
+    date_evaluation: str = Field(description="Evaluation of date match")
+    date_matches: bool
+    
+    location_evaluation: str = Field(description="Evaluation of location match")
+    location_matches: bool
+    
+    type_evaluation: str = Field(description="Evaluation of event type/keywords match")
+    type_matches: bool
+    
+    overall_reasoning: str = Field(description="Overall reasoning for the decision")
+    recommendation: str = Field(description="What to do next - try another event or provide this one")
 
+class EvaluateEventTool(BaseModel):
+    """Evaluate if the current event matches user requirements using LLM intelligence.
+    
+    Prerequisites: Must have read event details using read_event_file.
+    Uses AI to understand nuanced requirements and fuzzy matching.
+    """
+    action_type: Literal["evaluate_event"] = "evaluate_event"
+    think: str = Field(description="What aspects need careful evaluation")
+    
+    def execute(self, state: SharedState, deps: SharedDependencies) -> Dict[str, Any]:
+        # Validation
+        if not state.event_details:
+            return {"error": "No event details found. Please read an event file first."}
+        if not state.user_intent:
+            return {"error": "No user intent found. Cannot evaluate without requirements."}
+        
+        # Prepare context for LLM
+        evaluation_prompt = f"""Evaluate if this event matches the user's requirements.
+                                User Requirements:
+                                - Query: {state.user_intent.get('query', 'Not specified')}
+                                - Looking for: {', '.join([kw['keyword'] for kw in state.user_intent.get('keywords', [])])}
+                                - City: {state.user_intent.get('city', 'Not specified')}
+                                - Date: {state.user_intent.get('timeframe', {}).get('timeframe', 'Not specified')}
 
+                                Event Details:
+                                - Title: {state.event_details['parsed']['title']}
+                                - Date: {state.event_details['parsed']['start_datetime']['date']}
+                                - Location: {state.event_details['parsed']['location']}
+                                - City: {state.event_details['parsed']['city']}
+                                - Description: {state.event_details['parsed']['description']}
+
+                                Consider:
+                                1. Geographic knowledge (e.g., districts within cities)
+                                2. Date flexibility (e.g., "next few weeks" from user's specified date)
+                                3. Event type synonyms and related concepts
+                                4. User's likely intent even if not explicitly stated
+
+                                Be somewhat flexible but not overly permissive."""
+
+        try:
+            evaluation = deps.openai_client.chat.completions.create(
+                model="gpt-4.1-mini",
+                response_model=EventEvaluation,
+                messages=[
+                    {"role": "system", "content": "You are evaluating if events match user requirements. Use your knowledge of geography, dates, and event types."},
+                    {"role": "user", "content": evaluation_prompt}
+                ],
+                temperature=0.1)
+            
+            result = evaluation.model_dump()
+            result["page_id"] = state.event_details["page_id"]
+            result["event_title"] = state.event_details['parsed']['title']
+            
+            # Update state
+            state.last_evaluation = result
+            if not result["matches"]:
+                state.evaluated_page_ids.append(state.event_details["page_id"])
+            
+            return result
+            
+        except Exception as e:
+            return {"error": f"Evaluation failed: {str(e)}"}
+    
+    def summarize(self, result: Dict[str, Any]) -> str:
+        """Create conversation summary"""
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        if result["matches"]:
+            return f"Event '{result['event_title']}' matches! ({result['confidence']:.0%} confident) - {result['overall_reasoning']}"
+        else:
+            return f"Event '{result['event_title']}' doesn't match - {result['overall_reasoning']}"
+    
 
 # class ReadEventFileContentsTool(ReadEventFileContentsInput):
 #     """Read the contents of an event file based on the page_id.
@@ -406,7 +494,7 @@ class StateManager(BaseModel):
                                        default_factory=list)
     
     read_event_pages: List = Field(description="List of event pages that have been read", default_factory=list)
-    evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevancy against the user intent",
+    evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
 
 
