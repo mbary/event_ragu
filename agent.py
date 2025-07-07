@@ -645,6 +645,7 @@ class StateManager(BaseModel):
 class DependencyManager(BaseModel):
     """A class to manage shared dependencies and configurations for the agent."""
     client: instructor.Client = Field(description="The instructor client used for LLM interactions")
+    collection: chromadb.Collection = Field(description="ChromaDB collection for storing event pages and their embeddings")
 
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
