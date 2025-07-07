@@ -69,7 +69,7 @@ from setup_db import init_collection
 EVENT_DIR = "data/events"
 
 
-collection = init_collection()
+# collection = init_collection()
 
 ###################################################################
 ################### TOOL AND OUTPUT DEFINITIONS ###################
@@ -161,6 +161,8 @@ class ExtractUserIntentTool(BaseModel):
                 {"role": "user", "content": user_query}
             ],
             temperature=0.0)
+        state.user_intent = intent
+
         return intent
     
     def summarise(self, result: UserIntent) -> str:
@@ -219,7 +221,7 @@ class SearchEventPageTitlesTool(BaseModel):
         for keyword in keywords:
             print(f"Searching for keyword: {keyword}")
             kw_dict = {}
-            kw_results = collection.query(
+            kw_results = deps.collection.query(
                 query_texts=[keyword],
                 n_results=10)
 
@@ -331,7 +333,7 @@ class SelectEventFileTool(BaseModel):
             state.current_search_keyword = self._get_next_keyword(state)
 
             if not state.current_search_keyword:
-                return {"error": "No more keywords to search. Please refine your query or try again later.",
+                return {"error": "No more keywords to search. Generate a new query or proceed to provide the final answer.",
                         "suggested_action": "final_action or extract_user_intent"}
 
         return state.selected_page_id
@@ -350,6 +352,7 @@ class SelectEventFileTool(BaseModel):
                         key=lambda x: x.distance).page_id
 
             return page_id
+        # empty list -> attribute rror return none and use new keyword
         except AttributeError:
             return None
         
@@ -359,7 +362,6 @@ class SelectEventFileTool(BaseModel):
                                   key=lambda x: state.search_title_results[x]["min_distance"])
 
         return keyword
-## TODO just implemtnt finding the next file with smallest distance measure
 
 
 class ReadEventFileTool(BaseModel):
@@ -379,12 +381,10 @@ class ReadEventFileTool(BaseModel):
         page_id = state.selected_page_id
         
         try:
-            # 1. Read the raw file
             file_path = os.path.join(deps.event_dir, f"{page_id}.md")
             with open(file_path, 'r', encoding='utf-8') as f:
                 raw_content = f.read()
-            
-            # 2. Parse into structured format using LLM intelligence
+
             extraction_prompt = f"""Extract structured event information from this file.
 
                                     Event File Content:
@@ -397,7 +397,8 @@ class ReadEventFileTool(BaseModel):
                                     - Note the district/neighborhood if mentioned
                                     - Create a brief 1-2 sentence summary
                                     - Extract any pricing, audience, or registration information
-                                    - Use your knowledge to infer missing information when reasonable"""
+                                    - Use your knowledge to infer missing information when reasonable
+                                    """
 
             parsed_event = deps.client.chat.completions.create(
                 model="gpt-4.1-mini",
@@ -438,6 +439,8 @@ class ReadEventFileTool(BaseModel):
                 summary_data["summary"]["price"] = event_dict['price_info']
             if event_dict.get('target_audience'):
                 summary_data["summary"]["audience"] = event_dict['target_audience']
+
+            state.read_event_pages.add(page_id)
             
             return summary_data
             
@@ -472,7 +475,7 @@ class ReadEventFileTool(BaseModel):
 class EventEvaluation(BaseModel):
     """Structured evaluation result"""
     matches: bool = Field(description="Overall match determination")
-    confidence: float = Field(ge=0, le=1, description="Confidence score 0-1")
+    match_confidence: float = Field(ge=0, le=1, description="Confidence score 0-1")
     
     date_evaluation: str = Field(description="Evaluation of date match")
     date_matches: bool
@@ -490,7 +493,26 @@ class EvaluateEventTool(BaseModel):
     """Evaluate if the current event matches user requirements using LLM intelligence.
     
     Prerequisites: Must have read event details using read_event_file.
-    Uses AI to understand nuanced requirements and fuzzy matching.
+    
+    Args:
+        user_intent (UserIntent): The user's intent extracted from the query.
+        event_details (EventDetails): The details of the event to evaluate.
+
+    Returns:
+        EventEvaluation: The evaluation result containing match confidence, reasoning, and recommendations.
+    
+    Example:
+        { "matches": True,
+          "match_confidence": 0.85,
+          "date_evaluation": "The event date is within the user's specified timeframe.",
+          "date_matches": True,
+          "location_evaluation": "The event is in the user's specified city.",
+          "location_matches": True,
+          "type_evaluation": "The event type matches the user's interests.",
+          "type_matches": True,
+          "overall_reasoning": "The event matches the user's requirements based on date, location, and type.",
+          "recommendation": "Proceed with this event as it matches the user's requirements."
+        }
     """
     action_type: Literal["evaluate_event"] = "evaluate_event"
     think: str = Field(description="What aspects need careful evaluation")
@@ -498,9 +520,11 @@ class EvaluateEventTool(BaseModel):
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
         # Validation
         if not state.event_details:
-            return {"error": "No event details found. Please read an event file first."}
+            return {"error": "No event details found. Please read an event file first.", 
+                    "suggested_action": "read_event_file"}
         if not state.user_intent:
-            return {"error": "No user intent found. Cannot evaluate without requirements."}
+            return {"error": "No user intent found. Cannot evaluate without requirements.",
+                    "suggested_action": "extract_user_intent"}
         
         # Prepare context for LLM
         evaluation_prompt = f"""Evaluate if this event matches the user's requirements.
@@ -538,8 +562,7 @@ class EvaluateEventTool(BaseModel):
             result = evaluation.model_dump()
             result["page_id"] = state.event_details["page_id"]
             result["event_title"] = state.event_details['parsed']['title']
-            
-            # Update state
+
             state.last_evaluation = result
             if not result["matches"]:
                 state.evaluated_page_ids.append(state.event_details["page_id"])
@@ -552,7 +575,7 @@ class EvaluateEventTool(BaseModel):
     def summarise(self, result: Dict[str, Any]) -> str:
         """Create conversation summary"""
         if "error" in result:
-            return f"Error: {result['error']}"
+            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
         if result["matches"]:
             return f"Event '{result['event_title']}' matches! ({result['confidence']:.0%} confident) - {result['overall_reasoning']}"
@@ -636,9 +659,11 @@ class StateManager(BaseModel):
                                                  default_factory=set)
     selected_page_id: Optional[str] = Field(description="The current page_id being processed")
 
-    read_event_pages: List = Field(description="List of event pages that have been read", default_factory=list)
+    read_event_pages: Set = Field(description="List of event page_ids that have been read", default_factory=set)
+    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file")
     evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
+    last_evaluation: Optional[EventEvaluation] = Field(description="The last evaluation result of the event against user intent")
 
 
 
