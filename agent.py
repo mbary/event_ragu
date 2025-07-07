@@ -311,36 +311,111 @@ class SelectEventFileTool(SelectEventFileInput):
 ## TODO just implemtnt finding the next file with smallest distance measure
 
 
-class ReadEventFileContentsTool(BaseModel):
-    """Read the contents of an event file using the page_id with the smalles distance measure returned from the search_event_pages tool.
-    Args:
-        page_id (str): Unique identifier for the event page, with smallest distance measure.
+class ReadEventFileTool(BaseModel):
+    """Read event file contents and extract structured information using AI.
     
-    Returns:
-        event_details: Output containing the extracted structured details of the event.
-    Example:
+    Prerequisites: Must have selected a page_id using select_event_file.
+    After this: Use evaluate_event to check if it matches requirements.
     """
-    think: str = Field(description="Why is this reading needed and what information is sought")
-    action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
-    event_details: EventDetails = Field(description="Details of the read event")
-    def execute(self, page_id:str, client: instructor, model: str):
-        with open(os.path.join(EVENT_DIR, f"{page_id}.md"), 'r', encoding='utf-8') as f:
-            data = f.read()
+    action_type: Literal["read_event_file"] = "read_event_file"
+    think: str = Field(description="Why reading this specific event file")
+    
+    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
+        if not state.selected_page_id:
+            return {"error": "No page_id selected. Please select a file first using select_event_file.",
+                    "suggested_action": "select_event_file"}
+        
+        page_id = state.selected_page_id
+        
+        try:
+            # 1. Read the raw file
+            file_path = os.path.join(deps.event_dir, f"{page_id}.md")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                raw_content = f.read()
+            
+            # 2. Parse into structured format using LLM intelligence
+            extraction_prompt = f"""Extract structured event information from this file.
 
-        result = client.chat.completions.create(
-            model=model,
-            response_model=EventDetails,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that reads event files and extracts structured details."},
-                {"role": "user", "content": f"Read the event file with page_id: {page_id} and extract structured details."},
-                {"role": "assistant", "content": data}
-            ],
-            temperature=0.0
-        )
-        return ReadEventFileContentsOutput(
-            page_id=page_id,
-            contents=result
-        )
+                                    Event File Content:
+                                    {raw_content}
+
+                                    Instructions:
+                                    - Identify the event type based on the content (concert, exhibition, theater, workshop, festival, etc.)
+                                    - Extract all date/time information
+                                    - Identify the specific venue/location and city
+                                    - Note the district/neighborhood if mentioned
+                                    - Create a brief 1-2 sentence summary
+                                    - Extract any pricing, audience, or registration information
+                                    - Use your knowledge to infer missing information when reasonable"""
+
+            parsed_event = deps.client.chat.completions.create(
+                model="gpt-4.1-mini",
+                response_model=EventDetails,
+                messages=[
+                    {"role": "system", "content": "You are an expert at extracting and structuring event information. Use your knowledge of cities, venues, and event types to provide complete information."},
+                    {"role": "user", "content": extraction_prompt}
+                ],
+                temperature=0.0
+            )
+            event_dict = parsed_event.model_dump()
+            
+            event_dict["start_datetime"]["date"] = event_dict["start_datetime"]["date"].isoformat()
+            event_dict["end_datetime"]["date"] = event_dict["end_datetime"]["date"].isoformat()
+            
+            state.event_details = {
+                "page_id": page_id,
+                "raw_content": raw_content,
+                "parsed": event_dict,
+                "file_path": file_path
+            }
+            
+            location_str = f"{event_dict['location']}, {event_dict['city']}"
+            if event_dict.get('district'):
+                location_str += f" ({event_dict['district']})"
+            
+            summary_data = {
+                "page_id": page_id,
+                "summary": {
+                    "title": event_dict['title'],
+                    "type": event_dict['event_type'],
+                    "date": event_dict['start_datetime']['date'],
+                    "location": location_str,
+                    "brief": event_dict.get('summary', event_dict['description'][:100] + "...")
+                }
+            }
+            if event_dict.get('price_info'):
+                summary_data["summary"]["price"] = event_dict['price_info']
+            if event_dict.get('target_audience'):
+                summary_data["summary"]["audience"] = event_dict['target_audience']
+            
+            return summary_data
+            
+        except FileNotFoundError:
+            return {"error": f"Event file not found: {page_id}.md",
+                    "suggeste_action":"Select another file using select_event_file"}
+        except Exception as e:
+            return {"error": f"Failed to read or parse event file: {str(e)}",
+                    "suggested_action": "No idea mate, think of something"} ##TODO correct this XD 
+    
+    def summarize(self, result: Dict[str, Any]) -> str:
+        """Create conversation summary"""
+        if "error" in result:
+            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
+        
+        summary = result["summary"]
+        
+        parts = [
+            f"Read event '{summary['title']}'",
+            f"({summary['type']})",
+            f"on {summary['date']}",
+            f"at {summary['location']},",
+            f"Summary: {summary['brief']}"
+        ]
+
+        if summary.get('price'):
+            parts.append(f"- {summary['price']}")
+        
+        return " ".join(parts)
 
 
 class EventEvaluation(BaseModel):
@@ -369,7 +444,7 @@ class EvaluateEventTool(BaseModel):
     action_type: Literal["evaluate_event"] = "evaluate_event"
     think: str = Field(description="What aspects need careful evaluation")
     
-    def execute(self, state: SharedState, deps: SharedDependencies) -> Dict[str, Any]:
+    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
         # Validation
         if not state.event_details:
             return {"error": "No event details found. Please read an event file first."}
@@ -400,7 +475,7 @@ class EvaluateEventTool(BaseModel):
                                 Be somewhat flexible but not overly permissive."""
 
         try:
-            evaluation = deps.openai_client.chat.completions.create(
+            evaluation = deps.client.chat.completions.create(
                 model="gpt-4.1-mini",
                 response_model=EventEvaluation,
                 messages=[
@@ -676,7 +751,7 @@ class MyAgent:
         # return final_action.answer.model_dump()
         return final_action.answer
     
-    def get_action_summary(self) -> str:
+    def get_action_summary(self) -> str: ##TODO replace this with the custom summarise() method in each tool
         """Get a summary of all actions taken"""
         summary = "Action Summary:\n"
         for action in self.action_history:
