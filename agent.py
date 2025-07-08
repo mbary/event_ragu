@@ -1000,7 +1000,8 @@ Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 You have access to these tools:
 
 1. extract_user_intent - Extract what the user is looking for (keywords, location, dates)
-   Use this FIRST to understand the request
+   Use this FIRST to understand the request.
+   Only re-run if you exhaust all other options.
 
 2. search_event_pages - Search event database using keyword embeddings
    Returns multiple results ranked by relevance
@@ -1023,6 +1024,7 @@ WORKFLOW GUIDANCE:
 - If an event doesn't match, try the next one
 - The tools handle complex matching (districts within cities, date flexibility, event type synonyms)
 - Continue until you find a match or exhaust reasonable options
+- Always reason and provide answers in Polish
 
 IMPORTANT:
 - Trust the evaluation tool's judgment about matches
