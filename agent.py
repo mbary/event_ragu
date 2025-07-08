@@ -48,7 +48,7 @@ Update Current Tools with:
 """
 
 
-
+from __future__ import annotations
 import os
 import json
 from datetime import datetime, date
@@ -74,6 +74,45 @@ EVENT_DIR = "data/events"
 ###################################################################
 ################### TOOL AND OUTPUT DEFINITIONS ###################
 ###################################################################
+
+###########################################################
+######### STATE MANAGER AND COLLECTION DEFINITION #########
+###########################################################
+
+class StateManager(BaseModel):
+    """State manager to keep track of the conversation, extracted values and actions taken."""
+    # Returned by UserIntent
+    
+    original_query: Optional[str] = Field(description="The original user query that initiated the conversation")
+
+    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query", default=None)
+    
+    # Returned by SearchEventPageTitlesTool
+    search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
+                                       default_factory=dict)
+    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages")
+    exhausted_search_keywords: Set[str] = Field(description="List of keywords that have been searched for and exhausted",
+                                                 default_factory=set)
+    selected_page_id: Optional[str] = Field(description="The current page_id being processed")
+
+    read_event_pages: Set = Field(description="List of event page_ids that have been read", default_factory=set)
+    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file")
+    evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
+                                        default_factory=list)
+    last_evaluation: Optional[EventEvaluation] = Field(description="The last evaluation result of the event against user intent")
+    evaluation_history: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="All evaluated events with details and confidence scores"
+    )
+
+
+
+class DependencyManager(BaseModel):
+    """A class to manage shared dependencies and configurations for the agent."""
+    client: Any = Field(description="The instructor client used for LLM interactions")
+    collection: chromadb.Collection = Field(description="ChromaDB collection for storing event pages and their embeddings")
+    model: str = Field(description="The LLM model to use for interactions")
+
 
 #########################
 ###### User Intent ######
@@ -972,42 +1011,7 @@ AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEven
 
 
 
-###########################################################
-######### STATE MANAGER AND COLLECTION DEFINITION #########
-###########################################################
 
-class StateManager(BaseModel):
-    """State manager to keep track of the conversation, extracted values and actions taken."""
-    # Returned by UserIntent
-    
-    original_query: Optional[str] = Field(description="The original user query that initiated the conversation")
-
-    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query")
-    
-    # Returned by SearchEventPageTitlesTool
-    search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
-                                       default_factory=dict)
-    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages")
-    exhausted_search_keywords: Set[str] = Field(description="List of keywords that have been searched for and exhausted",
-                                                 default_factory=set)
-    selected_page_id: Optional[str] = Field(description="The current page_id being processed")
-
-    read_event_pages: Set = Field(description="List of event page_ids that have been read", default_factory=set)
-    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file")
-    evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
-                                        default_factory=list)
-    last_evaluation: Optional[EventEvaluation] = Field(description="The last evaluation result of the event against user intent")
-    evaluation_history: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="All evaluated events with details and confidence scores"
-    )
-
-
-
-class DependencyManager(BaseModel):
-    """A class to manage shared dependencies and configurations for the agent."""
-    client: instructor.Client = Field(description="The instructor client used for LLM interactions")
-    collection: chromadb.Collection = Field(description="ChromaDB collection for storing event pages and their embeddings")
 
 ####################################################################
 ###################### AGENT CLASS DEFINITION ######################
@@ -1046,18 +1050,17 @@ class MyAgent:
     """A simple AI agent that can search for event pages."""
     
     def __init__(self, model: str = "gpt-4.1-mini", verbose: bool = True):
-        self.model=model
-        self.verbose = verbose
-        self.action_history = []
 
-        
+        self.verbose = verbose
+        self.state = StateManager()
+
+        self.deps = DependencyManager(
+            client=instructor.from_openai(OpenAI()),
+            collection=init_collection(),
+            model=model)
         
         self.conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
-        self.client = instructor.from_openai(
-            OpenAI(api_key=os.environ.get("OPENAI_API_KEY") ),
-            mode=instructor.Mode.TOOLS_STRICT,
-            temperature=0.5
-            )
+        self.action_history = []        
         
     def _log(self, message: str):
         """Print if verbose is True."""
@@ -1065,8 +1068,10 @@ class MyAgent:
             pprint(message)
 
 
-    def step(self, user_query: str, max_steps: int = 3) -> str:
+    def step(self, user_query: str, max_steps: int = 15) -> str:
         """Process user query through multiple reasoning steps.
+        Make independent decisions and use tools autonomously to gather information
+        Necessary to answer the user's query.
         
         Args:
             user_query (str): The user's query or request to process.
@@ -1076,9 +1081,9 @@ class MyAgent:
             Final answer string
             """
         
-        self.user_intent = extract_user_intent(user_query=user_query, client=self.client)
-        self.refined_query = self.user_intent.query
-        self.ordered_title_keywords = sorted(self.user_intent.keywords, key=lambda x: x.confidence, reverse=True)
+        # self.user_intent = extract_user_intent(user_query=user_query, client=self.client)
+        # self.refined_query = self.user_intent.query
+        # self.ordered_title_keywords = sorted(self.user_intent.keywords, key=lambda x: x.confidence, reverse=True)
 
         # print("="*30)
         # print("USER KEYWORDS")
@@ -1086,7 +1091,7 @@ class MyAgent:
 
         self.conversation_history.append({
             "role": "user",
-            "content": self.refined_query
+            "content": user_query
         })
 
         for step_num in range(max_steps):
@@ -1099,92 +1104,82 @@ class MyAgent:
                     messages= self.conversation_history,
                     max_tokens=4096
                 )
-                # pprint(action.model_dump())
+
+                self._log(f"Thought: {action.think}")
+                self._log(f"Action: {action.action_type}")
+
+                results = action.execute(state=self.state, deps=self.deps)
+
+                summary = action.summarise(results)
+                action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {summary}"
+
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": action_summary
+                })
+
+                self.action_history.append({
+                    "step": step_num + 1,
+                    "think": action.think,
+                    "action_type": action.action_type,
+                    "result": results,
+                    "summary": summary
+                })
+
+                if isinstance(action, FinalAction):
+                    answer = action.execute(state=self.state, deps=self.deps)
+                    print("="*30)
+                    self._log(f"\nFinal Answer: {answer}")
+                    self._log(f"Thought: {action.think} ")
+                    print("="*30)
+                    return answer
+
             except Exception as e:
                 self._log(f"Error during action generation: {e}")
-                return "An error occurred while processing your request."
-            
-            self._log(f"Thought: {action.think}")
-            self._log(f"Action: {action.action_type}")
-            # pprint(action.model_dump())
-
-            if action.action_type == "search_event_pages":
-                result = action.execute(keywords=[kw.keyword for kw in self.ordered_title_keywords])
-                self.event_pages = result
-                print("="*30)
-                print("ECENT PAGES")
-                pprint(self.event_pages)
-                
-            elif action.action_type == "read_event_file_contents":
-                page_id = min(
-                    self.event_pages, 
-                    key=lambda x: self.event_pages[x]["min_distance"]
-                )
-                result = action.execute(page_id=page_id, 
-                                        client=self.client, 
-                                        model=self.model
-                                        )
-                print("="*30)
-                print("Reading event file contents for page_id:", page_id)
-                pprint(result.model_dump())
-            else: 
-                result = action.execute()
-                print("="*30)
-                self._log(f"Result: {result.model_dump()}")
-
-            # Add to memory
-            self.action_history.append({
-                "step": step_num + 1,
-                "think": action.think,
-                "action_type": action.action_type,
-                "result": result
-            })
-
-            action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {result}"
-
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": action_summary + f"Result: {result}"
-            })
-
-            if isinstance(action, FinalAction):
-            # if isinstance(action, FinalActionTool):
-                self._log(f"\nFinal Answer: {action.answer}")
-                self._log(f"Confidence: {action.confidence}")
-                # return action.answer.model_dump()
-                return action.answer
-            
-            self.conversation_history.append({
-                "role": "user",
-                "content": "based on this result, what should we do next? If you have enough information, provide a final answer."
-            })
-        self._log("Reached maximum steps without final answer.")
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": f"Error occured: {str(e)}."
+                })
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": f"Error: {str(e)}. Try a different appraoch"
+                })
+        self._log("\nReached maximum steps.\nRequesting final answer...\n")            
         self.conversation_history.append({
             "role": "user",
             "content": "You've reached the maximum number of steps. Please provide a final answer based on the information gathered."
         })
-        final_action = self.client.chat.completions.create(
-            model=self.model,
-            response_model=FinalAction,
-            messages=self.conversation_history,
-            max_tokens=4096
-        )
-        print(f"Final Thought: {final_action.think}")
-        # return final_action.answer.model_dump()
-        return final_action.answer
-    
-    def get_action_summary(self) -> str: ##TODO replace this with the custom summarise() method in each tool
-        """Get a summary of all actions taken"""
-        summary = "Action Summary:\n"
+
+        try:
+            final_action = self.client.chat.completions.create(
+                model=self.model,
+                response_model=FinalAction,
+                messages=self.conversation_history,
+                max_tokens=4096
+            )
+            answer = final_action.execute(state=self.state, deps=self.deps)
+            self._log(f"\nFinal Thought: {final_action.think}")
+            self._log(f"Final Answer: {answer}")
+            return answer
+        
+        except Exception as e:
+            self._log(f"Error during final action generation: {e}")
+            return "I apologise, but I encountered an error while trying to provide a final answer. Please try rephrasing your request or being more specific about what you're looking for."
+            # pprint(action.model_dump())
+
+    def get_action_summary(self) -> str:
+        """Get a summary of all actions taken."""
+        summary_parts = ["Action Summary:\n"]
+        
         for action in self.action_history:
-            summary += f"\nStep {action['step']}: {action['action_type']}\n"
-            summary += f"  Thought: {action['think']}\n"
-            summary += f"  Result: {action['result']}\n"
-        return summary
+            summary_parts.append(f"\nStep {action['step']}: {action['action_type']}")
+            summary_parts.append(f"  Thought: {action['think']}")
+            summary_parts.append(f"  Result: {action['summary']}\n")
+        
+        return "\n".join(summary_parts)
     
 if __name__ == "__main__":
     
-    collection = init_collection()
     while True:
         user_query = input("Enter your query (or 'exit' to quit): ")
         try:
