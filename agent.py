@@ -83,23 +83,28 @@ class StateManager(BaseModel):
     """State manager to keep track of the conversation, extracted values and actions taken."""
     # Returned by UserIntent
     
-    original_query: Optional[str] = Field(description="The original user query that initiated the conversation")
+    original_query: Optional[str] = Field(description="The original user query that initiated the conversation"
+                                          , default=None)
 
     user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query", default=None)
     
     # Returned by SearchEventPageTitlesTool
     search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
                                        default_factory=dict)
-    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages")
+    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages"
+                                                  , default=None)
     exhausted_search_keywords: Set[str] = Field(description="List of keywords that have been searched for and exhausted",
                                                  default_factory=set)
-    selected_page_id: Optional[str] = Field(description="The current page_id being processed")
+    selected_page_id: Optional[str] = Field(description="The current page_id being processed"
+                                            , default=None)
 
     read_event_pages: Set = Field(description="List of event page_ids that have been read", default_factory=set)
-    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file")
+    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file"
+                                                    , default=None)
     evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
-    last_evaluation: Optional[EventEvaluation] = Field(description="The last evaluation result of the event against user intent")
+    last_evaluation: EventEvaluation = Field(description="The last evaluation result of the event against user intent"
+                                                       , default=None)
     evaluation_history: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="All evaluated events with details and confidence scores"
@@ -634,59 +639,10 @@ class EvaluateEventTool(BaseModel):
             return f"Event '{result['event_title']}' matches! ({result['confidence']:.0%} confident) - {result['overall_reasoning']}"
         else:
             return f"Event '{result['event_title']}' doesn't match - {result['overall_reasoning']}"
-    
-
-# class ReadEventFileContentsTool(ReadEventFileContentsInput):
-#     """Read the contents of an event file based on the page_id.
-#     Returns:
-#         ReadEventFileContentsOutput: Output containing the contents of the event file."""
-    
-#     def execute(self) -> EventDetails:
-#         """Execute the reading of the event file contents.
         
-#         Returns:
-#             ReadEventFileContentsOutput: Output containing the contents of the event file.
-#         """
-#         print("="*30)
-#         print(f"Reading event file for page_id: {self.page_id}")
-#         file_path = os.path.join(EVENT_DIR, f"{self.page_id}.md")
-#         if not os.path.exists(file_path):
-#             raise FileNotFoundError(f"Event file {file_path} does not exist.")
-        
-#         with open(file_path, 'r', encoding='utf-8') as f:
-#             data = f.read()
-        
-#         return data
-#         # return ReadEventFileContentsOutput(
-#         #     page_id=self.page_id,
-#         #     contents=data
-#         # )
-
-
-
 ########################
 ##### FINAL ACTION #####
 ########################
-
-# class FinalAction(BaseModel):
-#     """Provide the final answer to the user
-#     Returns:
-#         EventDetails: The final comprehensive answer to the user's query, including event details like title, dates, location, and description.
-#     """
-#     action_type: Literal["finish"] = "finish"
-#     think: str = Field(description="Final reasoning before providing the answer")
-#     answer: str = Field(description="Final comprehensive answer to the user's query")
-#     # answer: str = Field(description="Final comprehensive answer to the user's query")
-#     confidence: float = Field(ge=0, le=1, description="Confidence score of the final answer (0-1)")
-
-#     def execute(self) -> str:
-#         """Execute the final action and return the answer.
-        
-#         Returns:
-#             str: Final answer to the user's query.
-#         """
-#         return self.answer
-
 class FinalAction(BaseModel):
     """Provide the final answer based on all gathered information.
     
@@ -1010,6 +966,25 @@ AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEven
                      ReadEventFileTool, ReadEventFileTool, EvaluateEventTool, FinalAction]
 
 
+### Rebuild the damn models
+StateManager.model_rebuild()
+DependencyManager.model_rebuild()
+UserIntentDateTime.model_rebuild()
+UserIntentKeyWord.model_rebuild()
+UserIntent.model_rebuild()
+ExtractUserIntentTool.model_rebuild()
+EventTitleResult.model_rebuild()
+SearchEventPageTitlesTool.model_rebuild()
+EventDetailsStart.model_rebuild()
+EventDetailsEnd.model_rebuild()
+EventDetails.model_rebuild()
+SelectEventFileTool.model_rebuild()
+ReadEventFileTool.model_rebuild()
+EventEvaluation.model_rebuild()
+EvaluateEventTool.model_rebuild()
+
+
+
 
 
 
@@ -1017,32 +992,42 @@ AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEven
 ###################### AGENT CLASS DEFINITION ######################
 ####################################################################
 
-SYSTEM_PROMPT = f"""You are a helpful assistant that helps users find information about events.
 
-You have access to the following tools:
-1. search_event_pages: Find event pages using embedding similarity search.
-2. read_event_file_contents: Read the contents of an event file using the page_id with the smalles distance measure returned from the search_event_pages tool.
-3. finish: Provide the final answer with all event details.
+SYSTEM_PROMPT = f"""You are an AI assistant specialized in finding local events that match user requirements.
 
-Today is {datetime.now().today()}.
+Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 
-You may make up to 10 tool calls before giving your final answer.
-"""
-"""
-In each turn, respond in the following format:
-<think>
-[your thoughts here]
-</think>
-<tool>
- 
+You have access to these tools:
 
-When you have found the answer, respond in the following format:
-<think>
-[your thoughts here]
-</think>
-<answer>
-[final answer here]
-</answer>
+1. extract_user_intent - Extract what the user is looking for (keywords, location, dates)
+   Use this FIRST to understand the request
+
+2. search_event_pages - Search event database using keyword embeddings
+   Returns multiple results ranked by relevance
+
+3. select_event_file - Select the next most relevant event from search results
+   Automatically picks the best unreviewed option
+
+4. read_event_file - Read full details of the selected event
+   Extracts structured information including dates, location, type
+
+5. evaluate_event - Check if the event matches user requirements
+   Uses AI to understand nuanced matching (e.g., "Ursus" is in Warsaw)
+
+6. final_answer - Provide the final response to the user
+   Can report success, no matches, or partial matches
+
+WORKFLOW GUIDANCE:
+- Always start by extracting user intent
+- After searching, work through results systematically
+- If an event doesn't match, try the next one
+- The tools handle complex matching (districts within cities, date flexibility, event type synonyms)
+- Continue until you find a match or exhaust reasonable options
+
+IMPORTANT:
+- Trust the evaluation tool's judgment about matches
+- Errors will guide you if prerequisites are missing
+- Focus on finding what the user actually wants, not just the closest keyword match
 """
 
 
@@ -1065,7 +1050,7 @@ class MyAgent:
     def _log(self, message: str):
         """Print if verbose is True."""
         if self.verbose:
-            pprint(message)
+            print(message)
 
 
     def step(self, user_query: str, max_steps: int = 15) -> str:
@@ -1098,15 +1083,15 @@ class MyAgent:
             self._log(f"\n----- Step {step_num + 1} -----\n")
 
             try:
-                action = self.client.chat.completions.create(
-                    model=self.model,
+                action = self.deps.client.chat.completions.create(
+                    model=self.deps.model,
                     response_model=AgentActions,
                     messages= self.conversation_history,
                     max_tokens=4096
                 )
 
+                self._log(f"Action: {action.action_type}\n")
                 self._log(f"Thought: {action.think}")
-                self._log(f"Action: {action.action_type}")
 
                 results = action.execute(state=self.state, deps=self.deps)
 
@@ -1151,8 +1136,8 @@ class MyAgent:
         })
 
         try:
-            final_action = self.client.chat.completions.create(
-                model=self.model,
+            final_action = self.deps.client.chat.completions.create(
+                model=self.deps.model,
                 response_model=FinalAction,
                 messages=self.conversation_history,
                 max_tokens=4096
