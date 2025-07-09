@@ -94,7 +94,7 @@ class UserIntent(BaseModel):
         description="A thought process or reasoning behind the user's intent extraction.",
         examples=["What does the user intend to do?"])
     
-    # action_type: Literal["extract_user_intent"] = "extract_user_intent"
+    # action_type: Literal["get_query_details"] = "get_query_details"
     query_refined: str = Field(description="A refined user query.")
 
     timeframe: UserIntentDateTime = Field(description="The timeframe for the event search", 
@@ -124,7 +124,7 @@ class ExtractUserIntentTool(BaseModel):
         UserIntent: The extracted user intent containing keywords, timeframe, city, and location.
     """
     think: str = Field(description="Why is this extraction needed and what information is sought")
-    action_type: Literal["extract_user_intent"] = "extract_user_intent"
+    action_type: Literal["get_query_details"] = "get_query_details"
 
     def execute(self, state: StateManager, deps: DependencyManager) -> UserIntent:
         """Extract user intent from the user query."""
@@ -136,7 +136,7 @@ class ExtractUserIntentTool(BaseModel):
         Returns:
         - think: A thought process or reasoning behind the user's intent extraction.
         - query: A refined user query.
-        - action_type: The type of action to be performed, which is always "extract_user_intent".
+        - action_type: The type of action to be performed, which is always "get_query_details".
         - timeframe: The timeframe for the event search, represented as a datetime object in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).
         - city: The city where the user wants to find events, represented as a string.
         - location: The location where the user wants to find events, represented as a string.
@@ -207,11 +207,11 @@ class SearchEventPageTitlesTool(BaseModel):
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
 
         if not state.user_intent:
-            return {"error": "User intent not found in state. Please extract user intent first using extract_user_intent tool.",
-                    "suggested_action": "extract_user_intent"}
+            return {"error": "User intent not found in state. Please extract user intent first using get_query_details tool.",
+                    "suggested_action": "get_query_details"}
         elif not state.user_intent.keywords:
             return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
-                    "suggested_action": "extract_user_intent"}
+                    "suggested_action": "get_query_details"}
         keywords = [k.keyword for k in state.user_intent.keywords]
         # print(keywords)
         final_dict = {}
@@ -334,7 +334,7 @@ class SelectEventFileTool(BaseModel):
 
             if not state.current_search_keyword:
                 return {"error": "No more keywords to search. Generate a new query or proceed to provide the final answer.",
-                        "suggested_action": "final_action or extract_user_intent"}
+                        "suggested_action": "final_action or get_query_details"}
 
         return state.selected_page_id
     
@@ -533,7 +533,7 @@ class EvaluateEventTool(BaseModel):
                     "suggested_action": "read_event_file"}
         if not state.user_intent:
             return {"error": "No user intent found. Cannot evaluate without requirements.",
-                    "suggested_action": "extract_user_intent"}
+                    "suggested_action": "get_query_details"}
         
         # Prepare context for LLM
         evaluation_prompt = f"""Evaluate if this event matches the user's requirements.
@@ -965,7 +965,7 @@ Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 
 You have access to these tools:
 
-1. extract_user_intent - Extract what the user is looking for (keywords, location, dates)
+1. get_query_details - Extract what the user is looking for (keywords, location, dates)
    Use this FIRST to understand the request.
    Only re-run if you exhaust all other options.
 
