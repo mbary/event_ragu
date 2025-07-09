@@ -612,14 +612,14 @@ class EvaluateEventTool(BaseModel):
             state.evaluation_history.append({
                                             "page_id": state.event_details["page_id"],
                                             "title": state.event_details["parsed"]["title"],
-                                            "matches": result["matches"], ##TODO CORRECT THIS WTF IS EVENT
                                             "confidence": result["match_confidence"],
                                             "reasons": result["overall_reasoning"],
                                             "date": state.event_details["parsed"]["start_datetime"]["date"],
+                                            "location": f"{state.event_details['parsed']['location']}, {state.event_details['parsed']['city']}",
+                                            "matches": result["matches"],
                                             "date_matches": result["date_matches"],
                                             "location_matches": result["location_matches"],
                                             "type_matches": result["type_matches"],
-                                            "location": f"{state.event_details['parsed']['location']}, {state.event_details['parsed']['city']}"
                                             })
             return result 
             
@@ -656,59 +656,44 @@ class FinalAction(BaseModel):
 
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
         """Generate a comprehensive, human-readable answer from the collected state."""
-
-        found_perfect_match = state.last_evaluation and state.last_evaluation.get("matches", False)
         
-        if found_perfect_match:
-            event = state.event_details["parsed"]
-            evaluation = state.last_evaluation
-            
-            answer = "I found an event that matches your request perfectly!\n"
-            answer += f"**{event['title']}**\n"
-            answer += f"**Date:** {self._format_date(event['start_datetime']['date'])}\n"
-            answer += f"**Location:** {event['location']}, {event['city']}"
-            if event.get('district'):
-                answer += f" ({event['district']})" 
-            answer += f"\n**Type:** {event['event_type']}\n"
-            if event.get('price_info'):
-                answer += f"**Price:** {event['price_info']}\n"
-            answer += f"\n**Summary:**\n{event.get('summary', event['description'])}\n"
 
-            answer += f"**Why this is a good match:**\n{evaluation.get('overall_reasoning', 'Matches your criteria.')}\n"
-            if event.get("source_url"):
-                answer += f"For more information, visit: {event['source_url']}\n"
-            
-            return answer
-
-        # If no perfect match was found, check if we have any evaluations.
-        elif state.evaluation_history:
-            # Find the best possible option from the ones we've already evaluated.
-            best_alternative = sorted(state.evaluation_history, key=lambda x: x.get('confidence', 0), reverse=True)[0]
-
-            answer_parts = [
-                "I couldn't find a perfect match for your request. However, based on what you're looking for, here is the closest alternative I found:\n",
-                f"**{best_alternative['title']}**\n",
-                f"**Date:** {self._format_date(best_alternative['date'])}",
-                f"**Location:** {best_alternative['location']}\n",
-                f"**Please note why this isn't a perfect match:**\n*{best_alternative['reasons']}*\n",
-                "This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
-            ]
-            
-            return "\n".join(answer_parts)
-
-        else:
-            # --- ULTIMATE FALLBACK: The search returned no results at all ---
+        if not state.evaluation_history:
             intent = state.user_intent
-            answer_parts = [
-                "I'm sorry, but my search for events matching your request came up empty.\n"
-            ]
+            answer = "I'm sorry, but my search for events matching your request came up empty.\n"
+
             if intent:
                 keywords = [kw.keyword for kw in intent.keywords]
-                answer_parts.append(f"**I was looking for:** An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.timeframe.strftime('%B %Y')}.")
-            
-            answer_parts.append("\nThere may be no events of this type listed, or you could try searching with different keywords.")
-            
-            return "\n".join(answer_parts)
+                answer+=f"**I was looking for:** An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.timeframe.strftime('%B %Y')}."
+                
+            answer+="\nThere may be no events of this type listed, or you could try searching with different keywords."
+            return answer
+    
+        sorting_key=lambda e: (e.get('type_matches', False),
+                               e.get('location_matches', False),
+                               e.get('date_matches', False),
+                               e.get('confidence', 0))
+
+        best_event_overall = sorted(state.evaluation_history, key=sorting_key, reverse=True)[0]
+
+        if best_event_overall.get('matches', False):
+            answer="After reviewing the options, I found an event that's a great match for your request!\n"
+            answer+=f"**{best_event_overall['title']}**\n"
+            answer+=f"**Date:** {self._format_date(best_event_overall['date'])}"
+            answer+=f"**Location:** {best_event_overall['location']}\n"
+            answer+=f"**Why this is a good match:**\n*{best_event_overall['reasons']}*"
+
+            return answer
+        
+        else:
+            answer="I couldn't find a perfect match for your request. However, after reviewing all the options, here is the closest alternative I found:\n"
+            answer+=f"**{best_event_overall['title']}**\n"
+            answer+=f"**Date:** {self._format_date(best_event_overall['date'])}"
+            answer+=f"**Location:** {best_event_overall['location']}\n"
+            answer+=f"**Please note why this isn't a perfect match:**\n*{best_event_overall['reasons']}*\n"
+            answer+="This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
+
+            return answer
 
     def _format_date(self, date_str: str) -> str:
         """Format date nicely for display."""
