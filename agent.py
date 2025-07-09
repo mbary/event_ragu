@@ -522,6 +522,9 @@ class EventEvaluation(BaseModel):
                                     0.2-0.3 = Weak match (same city but wrong type/date)
                                     0.0-0.1 = No match (completely different)""")
     
+    theme_evaluation: str = Field(description="Evaluation of the event's core subject matter or theme.")
+    theme_matches: bool
+    
     date_evaluation: str = Field(description="Evaluation of date match")
     date_matches: bool
     
@@ -547,6 +550,8 @@ class EvaluateEventTool(BaseModel):
     Example:
         { "matches": True,
           "match_confidence": 0.85,
+          "theme_evaluation": "The event theme aligns with the user's interests.",
+          "theme_matches": True,
           "date_evaluation": "The event date is within the user's specified timeframe.",
           "date_matches": True,
           "location_evaluation": "The event is in the user's specified city.",
@@ -585,10 +590,15 @@ class EvaluateEventTool(BaseModel):
                                 - Description: {state.event_details['parsed']['description']}
 
                                 Consider:
-                                1. Geographic knowledge (e.g., districts within cities)
-                                2. Date flexibility (e.g., "next few weeks" from user's specified date)
-                                3. Event type synonyms and related concepts
-                                4. User's likely intent even if not explicitly stated
+                                1. Theme/Subject Matter: First evaluate the core subject. Is the event about the user's topic of interest?
+                                   For example, if the user wants a **"pottery making workshop"**:
+                                    - An event called **"Ceramics Glazing Class"** is a strong **THEME match**, as it's about the same craft.
+                                    - An event called **"Beginner's Weaving Workshop"** is a **THEME mismatch**, despite being the same event type.
+                                2. Geographic knowledge (e.g., districts within cities)
+                                3. Date flexibility (e.g., "next few weeks" from user's specified date)
+                                4. Event type synonyms and related concepts
+                                5. User's likely intent even if not explicitly stated
+                                6. Overall Match: An event can be a good overall match even if the type is different, as long as the theme is correct.
 
                                 Be somewhat flexible but not overly permissive."""
 
@@ -617,6 +627,8 @@ class EvaluateEventTool(BaseModel):
                                             "date": state.event_details["parsed"]["start_datetime"]["date"],
                                             "location": f"{state.event_details['parsed']['location']}, {state.event_details['parsed']['city']}",
                                             "matches": result["matches"],
+                                            "theme_matches": result["theme_matches"],
+                                            "type_matches": result["type_matches"],
                                             "date_matches": result["date_matches"],
                                             "location_matches": result["location_matches"],
                                             "type_matches": result["type_matches"],
@@ -657,7 +669,6 @@ class FinalAction(BaseModel):
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
         """Generate a comprehensive, human-readable answer from the collected state."""
         
-
         if not state.evaluation_history:
             intent = state.user_intent
             answer = "I'm sorry, but my search for events matching your request came up empty.\n"
@@ -669,9 +680,10 @@ class FinalAction(BaseModel):
             answer+="\nThere may be no events of this type listed, or you could try searching with different keywords."
             return answer
     
-        sorting_key=lambda e: (e.get('type_matches', False),
+        sorting_key=lambda e: (e.get('theme_matches', False),
                                e.get('location_matches', False),
-                               e.get('date_matches', False),
+                               e.get('date_matches', False),                               
+                               e.get('type_matches', False),
                                e.get('confidence', 0))
 
         best_event_overall = sorted(state.evaluation_history, key=sorting_key, reverse=True)[0]
