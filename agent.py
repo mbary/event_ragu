@@ -626,6 +626,7 @@ class EvaluateEventTool(BaseModel):
                                             "reasons": result["overall_reasoning"],
                                             "date": state.event_details["parsed"]["start_datetime"]["date"],
                                             "location": f"{state.event_details['parsed']['location']}, {state.event_details['parsed']['city']}",
+                                            "source_url": state.event_details["source_url"],
                                             "matches": result["matches"],
                                             "theme_matches": result["theme_matches"],
                                             "type_matches": result["type_matches"],
