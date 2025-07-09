@@ -176,6 +176,7 @@ class ParseUserQueryTool(BaseModel):
         summary += f"City: {result.city}\n"
         summary += f"Location: {result.location}\n"
         summary += f"Refined User Query: {result.query_refined}\n"
+        summary += "Now that the user's requirements are understood, the next step is to use 'search_event_pages' to find relevant events based on the extracted keywords."
 
         return summary
 
@@ -191,7 +192,8 @@ class EventTitleResult(BaseModel):
     distance: float = Field(description="Distance score of the similarity embedding search")
 
 class SearchEventPageTitlesTool(BaseModel):
-    """Search for top 10 relevant event pages using title embedding similarity.
+    """Search for top 10 relevant event pages using title embedding similarity. Use this to get an initial list of potential events. 
+       DO NOT use this if you have already selected a specific file and need to read its contents.
 
     Args:
         keywords (List[str]): List of keywords to search for in event titles.
@@ -264,6 +266,9 @@ class SearchEventPageTitlesTool(BaseModel):
             summary += f"Keyword: {keyword}\n"
             summary += f"Minimum Distance: {results[keyword]['min_distance']}\n"
             summary += f"File count: {len(results[keyword]['results'])}\n"
+
+        summary += "A list of potential events has been found. The next step is to use 'select_best_event_file' to pick the single most promising event to investigate further."
+                    
         return summary
     
 
@@ -347,7 +352,7 @@ class SelectEventFileTool(BaseModel):
         if "error" in result:
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
-        return f"Selected event file with page_id: {result}"
+        return f"Selected event file with page_id: {result}\nThe next logical step is to use the 'read_event_file_contents' tool to get the details of this file"
     
     def _get_page_id(self, keyword: str, state: StateManager) -> str:
         """Get the page_id of the selected event file."""
@@ -369,7 +374,7 @@ class SelectEventFileTool(BaseModel):
 
 
 class ReadEventFileTool(BaseModel):
-    """Read event file details.
+    """Use this tool to read the full contents of a specific event file AFTER it has been chosen by 'select_best_event_file'.
 
     Args:
         page_id (str): The page_id of the event file selected by select_best_event_file.
@@ -499,7 +504,10 @@ class ReadEventFileTool(BaseModel):
         if summary.get('price'):
             parts.append(f"- {summary['price']}")
         
-        return " ".join(parts)
+        summary_str = " ".join(parts)
+
+        summary_str += f"\nThe details for event '{summary['title']}' have been read.\nNow, these details must be compared against the user's original request using the 'evaluate_event_details_against_user_query' tool."
+        return summary_str
 
 
 class EventEvaluation(BaseModel):
@@ -527,7 +535,7 @@ class EventEvaluation(BaseModel):
     recommendation: str = Field(description="What to do next - try another event or provide this one")
 
 class EvaluateEventTool(BaseModel):
-    """Evaluate if the read event matches the user requirements.
+    """Use this AFTER reading an event's contents with 'read_event_file_contents' to determine if it's a good match for the user.
     
     Args:
         user_requirements (UserIntent): The user's requirements extracted from the original query.
@@ -622,9 +630,14 @@ class EvaluateEventTool(BaseModel):
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
         if result["matches"]:
-            return f"Event '{result['event_title']}' matches! ({result['match_confidence']:.0%} confident) - {result['overall_reasoning']}"
+            summary = f"Event '{result['event_title']}' matches! ({result['match_confidence']:.0%} confident) - {result['overall_reasoning']}"
+            summary += " The next step is to use 'final_answer' to present this result to the user."
+            return summary
+        
         else:
-            return f"Event '{result['event_title']}' doesn't match - {result['overall_reasoning']}"
+            summary = f"Event '{result['event_title']}' doesn't match - {result['overall_reasoning']}."
+            summary += "\nThe next step is to use 'select_best_event_file' to pick the next best event from the search results and repeat the process."
+            return summary
         
 ########################
 ##### FINAL ACTION #####
@@ -761,7 +774,7 @@ class FinalAction(BaseModel):
                 answer_parts.append("\n📋 Closest matches (though not ideal):\n")
                 for i, alt in enumerate(alternatives, 1):
                     answer_parts.append(
-                        f"{i}. **{alt['title']}** (confidence: {alt['confidence']:.0%})\n"
+                        f"{i}. **{alt['title']}** (confidence: {alt['confidence']*100:.0%})\n"
                         f"    {alt['date']} 📍 {alt['location']}\n"
                         f"    {alt['match_summary']}\n\n"
                     )
@@ -937,7 +950,7 @@ class FinalAction(BaseModel):
         has_match = result.get("has_match", False)
         
         if answer_type == "found":
-            return f"✅ Provided matching event (confidence: {confidence:.0%})"
+            return f"✅ Provided matching event (confidence: {confidence*100:.0%})"
         elif answer_type == "not_found":
             return f"❌ No matches found after checking {result.get('events_evaluated', 0)} events"
         elif answer_type == "partial_match":
