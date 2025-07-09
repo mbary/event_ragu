@@ -54,7 +54,7 @@ import json
 from datetime import datetime, date
 from typing import Union, List, Literal, Optional, Dict, Any, Set
 from collections import OrderedDict
-
+from pathlib import Path
 import chromadb
 import instructor
 from anthropic import Anthropic
@@ -66,7 +66,7 @@ from pprint import pprint
 from setup_db import init_collection
 
 
-EVENT_DIR = "data/events"
+EVENT_DIR = Path("data/events")
 
 
 # collection = init_collection()
@@ -101,7 +101,7 @@ class StateManager(BaseModel):
     read_event_pages: Set = Field(description="List of event page_ids that have been read", default_factory=set)
     event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file"
                                                     , default=None)
-    evaulated_event_pages: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
+    evaluated_page_ids: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
     last_evaluation: EventEvaluation = Field(description="The last evaluation result of the event against user intent"
                                                        , default=None)
@@ -117,6 +117,8 @@ class DependencyManager(BaseModel):
     client: Any = Field(description="The instructor client used for LLM interactions")
     collection: chromadb.Collection = Field(description="ChromaDB collection for storing event pages and their embeddings")
     model: str = Field(description="The LLM model to use for interactions")
+    event_dir: Path = Field(description="Directory where event files are stored")
+    max_retries: int = Field(default=5, description="Maximum number of retries for LLM calls")
 
 
 #########################
@@ -142,7 +144,7 @@ class UserIntent(BaseModel):
         description="A thought process or reasoning behind the user's intent extraction.",
         examples=["What does the user intend to do?"])
     
-    action_type: Literal["extract_user_intent"] = "extract_user_intent"
+    # action_type: Literal["extract_user_intent"] = "extract_user_intent"
     query_refined: str = Field(description="A refined user query.")
 
     timeframe: UserIntentDateTime = Field(description="The timeframe for the event search", 
@@ -200,6 +202,7 @@ class ExtractUserIntentTool(BaseModel):
         intent = deps.client.chat.completions.create(
             model="gpt-4.1-mini",
             response_model=UserIntent,
+            max_retries=deps.max_retries,
             messages=[
                 {"role":"system", "content": SYSTEM_PROMPT_INTENT_EXTRACTION},
                 {"role": "user", "content": user_query}
@@ -259,9 +262,12 @@ class SearchEventPageTitlesTool(BaseModel):
         elif not state.user_intent.keywords:
             return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
                     "suggested_action": "extract_user_intent"}
-        keywords = state.user_intent.keywords
+        keywords = [k.keyword for k in state.user_intent.keywords]
+        # print(keywords)
         final_dict = {}
-
+        # print("="*30)
+        # print("KEYWORD TYPE KURWA")
+        # print(type(keywords))
         for keyword in keywords:
             print(f"Searching for keyword: {keyword}")
             kw_dict = {}
@@ -451,6 +457,7 @@ class ReadEventFileTool(BaseModel):
                     {"role": "system", "content": "You are an expert at extracting and structuring event information. Use your knowledge of cities, venues, and event types to provide complete information."},
                     {"role": "user", "content": extraction_prompt}
                 ],
+                max_retries=deps.max_retries,
                 temperature=0.0
             )
             event_dict = parsed_event.model_dump()
@@ -492,6 +499,7 @@ class ReadEventFileTool(BaseModel):
             return {"error": f"Event file not found: {page_id}.md",
                     "suggeste_action":"Select another file using select_event_file"}
         except Exception as e:
+            # raise e
             return {"error": f"Failed to read or parse event file: {str(e)}",
                     "suggested_action": "No idea mate, think of something"} ##TODO correct this XD 
     
@@ -580,10 +588,10 @@ class EvaluateEventTool(BaseModel):
         # Prepare context for LLM
         evaluation_prompt = f"""Evaluate if this event matches the user's requirements.
                                 User Requirements:
-                                - Query: {state.user_intent.get('query', 'Not specified')}
-                                - Looking for: {', '.join([kw['keyword'] for kw in state.user_intent.get('keywords', [])])}
-                                - City: {state.user_intent.get('city', 'Not specified')}
-                                - Date: {state.user_intent.get('timeframe', {}).get('timeframe', 'Not specified')}
+                                - Query: {state.user_intent.query_refined}
+                                - Looking for: {', '.join([k.keyword for k in state.user_intent.keywords])}
+                                - City: {state.user_intent.city}
+                                - Date: {state.user_intent.timeframe.timeframe.isoformat()}
 
                                 Event Details:
                                 - Title: {state.event_details['parsed']['title']}
@@ -608,6 +616,7 @@ class EvaluateEventTool(BaseModel):
                     {"role": "system", "content": "You are evaluating if events match user requirements. Use your knowledge of geography, dates, and event types."},
                     {"role": "user", "content": evaluation_prompt}
                 ],
+                max_retries=deps.max_retries,
                 temperature=0.1)
             
             result = evaluation.model_dump()
@@ -618,16 +627,17 @@ class EvaluateEventTool(BaseModel):
             state.evaluated_page_ids.append(state.event_details["page_id"])
             state.evaluation_history.append({
                                             "page_id": state.event_details["page_id"],
-                                            "title": event["title"],
-                                            "matches": result["matches"],
-                                            "confidence": result["confidence"],
-                                            "reasons": result.get("reasons", []),
-                                            "date": event["start_datetime"]["date"],
-                                            "location": f"{event['location']}, {event['city']}"
+                                            "title": state.event_details["parsed"]["title"],
+                                            "matches": result["matches"], ##TODO CORRECT THIS WTF IS EVENT
+                                            "confidence": result["match_confidence"],
+                                            "reasons": result["overall_reasoning"],
+                                            "date": state.event_details["parsed"]["start_datetime"]["date"],
+                                            "location": f"{state.event_details['parsed']['location']}, {state.event_details['parsed']['city']}"
                                             })
-            return result
+            return result 
             
         except Exception as e:
+            # raise e
             return {"error": f"Evaluation failed: {str(e)}"}
     
     def summarise(self, result: Dict[str, Any]) -> str:
@@ -636,7 +646,7 @@ class EvaluateEventTool(BaseModel):
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
         if result["matches"]:
-            return f"Event '{result['event_title']}' matches! ({result['confidence']:.0%} confident) - {result['overall_reasoning']}"
+            return f"Event '{result['event_title']}' matches! ({result['match_confidence']:.0%} confident) - {result['overall_reasoning']}"
         else:
             return f"Event '{result['event_title']}' doesn't match - {result['overall_reasoning']}"
         
@@ -705,7 +715,7 @@ class FinalAction(BaseModel):
             "search_completeness": confidence,
             "events_evaluated": num_evaluated,
             "has_match": has_match,
-            "search_keywords": [kw["keyword"] for kw in state.user_intent.get("keywords", [])] if state.user_intent else []
+            "search_keywords": [kw.keyword for kw in state.user_intent.keywords] if state.user_intent else []
         }
     
     def _build_found_answer(self, state: StateManager) -> str:
@@ -747,11 +757,11 @@ class FinalAction(BaseModel):
         ]
         
         if intent:
-            keywords = [kw["keyword"] for kw in intent.get("keywords", [])]
+            keywords = [kw.keyword for kw in intent.keywords]
             answer_parts.append(f"- Keywords: {', '.join(keywords)}\n")
-            answer_parts.append(f"- Location: {intent.get('city', 'Not specified')}\n")
+            answer_parts.append(f"- Location: {intent.city}\n")
             
-            timeframe = intent.get('timeframe', {})
+            timeframe = intent.timeframe
             if isinstance(timeframe, dict) and 'timeframe' in timeframe:
                 answer_parts.append(f"- Date: Around {timeframe['timeframe']}\n")
             else:
@@ -848,7 +858,7 @@ class FinalAction(BaseModel):
             
         return "".join(answer_parts)
     
-    def _get_top_alternatives(self, state: SharedState, limit: int = 3, min_confidence: float = 0.3) -> List[Dict]:
+    def _get_top_alternatives(self, state: StateManager, limit: int = 3, min_confidence: float = 0.3) -> List[Dict]:
         """Get top alternative events based on evaluation confidence scores."""
         
         if not state.evaluation_history:
@@ -868,14 +878,14 @@ class FinalAction(BaseModel):
                     "confidence": eval_record["confidence"],
                     "date": eval_record.get("date", "Date TBD"),
                     "location": eval_record.get("location", "Location TBD"),
-                    "match_summary": self._summarize_match_quality(eval_record)
+                    "match_summary": self._summarise_match_quality(eval_record)
                 })
         
         alternatives.sort(key=lambda x: x["confidence"], reverse=True)
         
         return alternatives[:limit]
     
-    def _summarize_match_quality(self, eval_record: Dict) -> str:
+    def _summarise_match_quality(self, eval_record: Dict) -> str:
         """Create a brief summary of why this is a good/poor match."""
         confidence = eval_record["confidence"]
         reasons = eval_record.get("reasons", [])
@@ -944,7 +954,7 @@ class FinalAction(BaseModel):
         except:
             return date_str
     
-    def summarize(self, result: Dict[str, Any]) -> str:
+    def summarise(self, result: Dict[str, Any]) -> str:
         """Create conversation summary."""
         answer_type = result.get("answer_type", "unknown")
         confidence = result.get("confidence", 0)
@@ -963,7 +973,7 @@ class FinalAction(BaseModel):
 
 
 AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEventFileTool,
-                     ReadEventFileTool, ReadEventFileTool, EvaluateEventTool, FinalAction]
+                     ReadEventFileTool, EvaluateEventTool, FinalAction]
 
 
 ### Rebuild the damn models
@@ -984,7 +994,13 @@ EventEvaluation.model_rebuild()
 EvaluateEventTool.model_rebuild()
 
 
+keys = ["user_intent","current_search_keyword","exhausted_search_keywords","selected_page_id","read_event_pages","event_details","last_evaluation","evaluated_page_ids","evaluation_history"]
 
+keys = ["user_intent","current_search_keyword","exhausted_search_keywords","selected_page_id","read_event_pages","last_evaluation","evaluated_page_ids","evaluation_history"]
+
+def get_subset(chuj, keys):
+    data = chuj.model_dump()
+    return {k: data[k] for k in keys}
 
 
 
@@ -1042,9 +1058,13 @@ class MyAgent:
         self.state = StateManager()
 
         self.deps = DependencyManager(
-            client=instructor.from_openai(OpenAI()),
+            client=instructor.from_openai(OpenAI(),
+                                          mode=instructor.Mode.TOOLS_STRICT
+                                          ),
+            max_retries=5,
             collection=init_collection(),
-            model=model)
+            model=model,
+            event_dir=EVENT_DIR)
         
         self.conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.action_history = []        
@@ -1067,15 +1087,8 @@ class MyAgent:
         Returns:
             Final answer string
             """
-        
-        # self.user_intent = extract_user_intent(user_query=user_query, client=self.client)
-        # self.refined_query = self.user_intent.query
-        # self.ordered_title_keywords = sorted(self.user_intent.keywords, key=lambda x: x.confidence, reverse=True)
 
-        # print("="*30)
-        # print("USER KEYWORDS")
-        # pprint(self.ordered_title_keywords)
-
+        self.state.original_query = user_query
         self.conversation_history.append({
             "role": "user",
             "content": user_query
@@ -1083,12 +1096,12 @@ class MyAgent:
 
         for step_num in range(max_steps):
             self._log(f"\n----- Step {step_num + 1} -----\n")
-
             try:
                 action = self.deps.client.chat.completions.create(
                     model=self.deps.model,
                     response_model=AgentActions,
                     messages= self.conversation_history,
+                    max_retries=self.deps.max_retries,
                     max_tokens=4096
                 )
 
@@ -1121,8 +1134,10 @@ class MyAgent:
                     print("="*30)
                     return answer
 
+                # pprint(get_subset(self.state,keys))
             except Exception as e:
                 self._log(f"Error during action generation: {e}")
+                # raise e
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": f"Error occured: {str(e)}."
@@ -1142,6 +1157,7 @@ class MyAgent:
                 model=self.deps.model,
                 response_model=FinalAction,
                 messages=self.conversation_history,
+                max_retries=self.deps.max_retries,
                 max_tokens=4096
             )
             answer = final_action.execute(state=self.state, deps=self.deps)
@@ -1151,8 +1167,8 @@ class MyAgent:
         
         except Exception as e:
             self._log(f"Error during final action generation: {e}")
+            # raise e
             return "I apologise, but I encountered an error while trying to provide a final answer. Please try rephrasing your request or being more specific about what you're looking for."
-            # pprint(action.model_dump())
 
     def get_action_summary(self) -> str:
         """Get a summary of all actions taken."""
@@ -1177,7 +1193,7 @@ if __name__ == "__main__":
             final_answer = agent.step(user_query)
             print(f"\nFinal Answer: {final_answer}")
             print("\n")
-            print(agent.get_action_summary())
+            # print(agent.get_action_summary())
         except KeyboardInterrupt:
             print("\nExiting...")
             break    
