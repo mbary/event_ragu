@@ -3,13 +3,14 @@ import os
 import json
 from datetime import datetime, date
 from typing import Union, List, Literal, Optional, Dict, Any, Set
-from collections import OrderedDict
 from pathlib import Path
+
 import chromadb
 import instructor
 from anthropic import Anthropic
 from pydantic import BaseModel, Field
 from openai import OpenAI
+
 from dotenv import load_dotenv
 load_dotenv()
 from pprint import pprint
