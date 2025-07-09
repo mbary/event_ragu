@@ -94,7 +94,7 @@ class UserIntent(BaseModel):
         description="A thought process or reasoning behind the user's intent extraction.",
         examples=["What does the user intend to do?"])
     
-    # action_type: Literal["get_query_details"] = "get_query_details"
+    # action_type: Literal["parse_user_query"] = "parse_user_query"
     query_refined: str = Field(description="A refined user query.")
 
     timeframe: UserIntentDateTime = Field(description="The timeframe for the event search", 
@@ -114,17 +114,20 @@ class UserIntent(BaseModel):
                                               max_length=5, 
                                               min_length=1)
 
-class ExtractUserIntentTool(BaseModel):
-    """Extract user intent from the user query.
+class ParseUserQueryTool(BaseModel):
+    """Parse user query extracting user requirements.
     
     Args:
         user_query (str): The user's query to extract intent from.
     
     Returns:
-        UserIntent: The extracted user intent containing keywords, timeframe, city, and location.
+        UserIntent: The extracted user requirements containing keywords, timeframe, city, and location.
+
+    Example:
+        "Gdzie mogę najwczesniej oddac krew w warszawie?" -> {"timeframe": "2025-10-01T00:00:00Z", "city": "Warszawa", "keywords": ["oddac krew", "warszawa"]}
     """
     think: str = Field(description="Why is this extraction needed and what information is sought")
-    action_type: Literal["get_query_details"] = "get_query_details"
+    action_type: Literal["parse_user_query"] = "parse_user_query"
 
     def execute(self, state: StateManager, deps: DependencyManager) -> UserIntent:
         """Extract user intent from the user query."""
@@ -136,7 +139,7 @@ class ExtractUserIntentTool(BaseModel):
         Returns:
         - think: A thought process or reasoning behind the user's intent extraction.
         - query: A refined user query.
-        - action_type: The type of action to be performed, which is always "get_query_details".
+        - action_type: The type of action to be performed, which is always "parse_user_query".
         - timeframe: The timeframe for the event search, represented as a datetime object in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).
         - city: The city where the user wants to find events, represented as a string.
         - location: The location where the user wants to find events, represented as a string.
@@ -188,7 +191,8 @@ class EventTitleResult(BaseModel):
     distance: float = Field(description="Distance score of the similarity embedding search")
 
 class SearchEventPageTitlesTool(BaseModel):
-    """Execute the search and return for 10 results using title embedding similarity.
+    """Search for top 10 relevant event pages using title embedding similarity.
+
     Args:
         keywords (List[str]): List of keywords to search for in event titles.
     Returns:
@@ -207,11 +211,11 @@ class SearchEventPageTitlesTool(BaseModel):
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
 
         if not state.user_intent:
-            return {"error": "User intent not found in state. Please extract user intent first using get_query_details tool.",
-                    "suggested_action": "get_query_details"}
+            return {"error": "User intent not found in state. Please extract user intent first using parse_user_query tool.",
+                    "suggested_action": "parse_user_query"}
         elif not state.user_intent.keywords:
             return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
-                    "suggested_action": "get_query_details"}
+                    "suggested_action": "parse_user_query"}
         keywords = [k.keyword for k in state.user_intent.keywords]
         # print(keywords)
         final_dict = {}
@@ -304,16 +308,16 @@ class EventDetails(BaseModel):
 ########### READ FILE CONTENTS ###########
 ##########################################
 class SelectEventFileTool(BaseModel):
-    """Execute the selection of the event file based on the page_id with the smallest distance measure.
+    """Select the event file with the smallest distance measure.
     
     Args:
         results_dict (Dict[str, Union[float, SearchEventPagesOutput]]): Dictionary containing the results of the search.
     
     Returns:
-        str: The page_id of the selected event file.
+        page_id (str): The page_id of the selected event file.
     """
     think: str = Field(description="I should select the event file based on the smallest distance measure.")
-    action_type: Literal["select_event_file"] = "select_event_file"
+    action_type: Literal["select_best_event_file"] = "select_best_event_file"
 
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
         print("="*30)
@@ -334,7 +338,7 @@ class SelectEventFileTool(BaseModel):
 
             if not state.current_search_keyword:
                 return {"error": "No more keywords to search. Generate a new query or proceed to provide the final answer.",
-                        "suggested_action": "final_action or get_query_details"}
+                        "suggested_action": "final_action or parse_user_query"}
 
         return state.selected_page_id
     
@@ -365,18 +369,42 @@ class SelectEventFileTool(BaseModel):
 
 
 class ReadEventFileTool(BaseModel):
-    """Read event file contents and extract structured information using AI.
-    
-    Prerequisites: Must have selected a page_id using select_event_file.
-    After this: Use evaluate_event to check if it matches requirements.
+    """Read event file details.
+
+    Args:
+        page_id (str): The page_id of the event file selected by select_best_event_file.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the structured event information extracted from the file.
+
+    Example:
+        "concert_00123"->   {
+                                "page_id": "concert_00123",
+                                "raw_content": "Full content of the event file",
+                                "parsed": {
+                                    "title": "Concert Title",
+                                    "event_type": "concert",
+                                    "start_datetime": {"date": "2025-10-01T18:00:00Z", "confidence": 0.95},
+                                    "end_datetime": {"date": "2025-10-01T20:00:00Z", "confidence": 0.90},
+                                    "location": "Venue Name",
+                                    "city": "Warsaw",
+                                    "district": "Mokotów",
+                                    "description": "Detailed description of the event.",
+                                    "summary": "Brief summary of the event.",
+                                    "target_audience": "General public",
+                                    "price_info": "$20 - $50",
+                                    "source_url": None
+                                },
+                                "file_path": "/path/to/event_file.md"
+                            }
     """
-    action_type: Literal["read_event_file"] = "read_event_file"
+    action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
     think: str = Field(description="Why reading this specific event file")
     
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
         if not state.selected_page_id:
-            return {"error": "No page_id selected. Please select a file first using select_event_file.",
-                    "suggested_action": "select_event_file"}
+            return {"error": "No page_id selected. Please select a file first using select_best_event_file.",
+                    "suggested_action": "select_best_event_file"}
         
         page_id = state.selected_page_id
         
@@ -447,7 +475,7 @@ class ReadEventFileTool(BaseModel):
             
         except FileNotFoundError:
             return {"error": f"Event file not found: {page_id}.md",
-                    "suggeste_action":"Select another file using select_event_file"}
+                    "suggeste_action":"Select another file using select_best_event_file"}
         except Exception as e:
             # raise e
             return {"error": f"Failed to read or parse event file: {str(e)}",
@@ -499,13 +527,11 @@ class EventEvaluation(BaseModel):
     recommendation: str = Field(description="What to do next - try another event or provide this one")
 
 class EvaluateEventTool(BaseModel):
-    """Evaluate if the current event matches user requirements using LLM intelligence.
-    
-    Prerequisites: Must have read event details using read_event_file.
+    """Evaluate if the read event matches the user requirements.
     
     Args:
-        user_intent (UserIntent): The user's intent extracted from the query.
-        event_details (EventDetails): The details of the event to evaluate.
+        user_requirements (UserIntent): The user's requirements extracted from the original query.
+        event_details (Dict[str, Any]): The structured event information extracted from the file.
 
     Returns:
         EventEvaluation: The evaluation result containing match confidence, reasoning, and recommendations.
@@ -523,17 +549,17 @@ class EvaluateEventTool(BaseModel):
           "recommendation": "Proceed with this event as it matches the user's requirements."
         }
     """
-    action_type: Literal["evaluate_event"] = "evaluate_event"
+    action_type: Literal["evaluate_event_details_against_user_query"] = "evaluate_event_details_against_user_query"
     think: str = Field(description="What aspects need careful evaluation")
     
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
         # Validation
         if not state.event_details:
             return {"error": "No event details found. Please read an event file first.", 
-                    "suggested_action": "read_event_file"}
+                    "suggested_action": "read_event_file_contents"}
         if not state.user_intent:
             return {"error": "No user intent found. Cannot evaluate without requirements.",
-                    "suggested_action": "get_query_details"}
+                    "suggested_action": "parse_user_query"}
         
         # Prepare context for LLM
         evaluation_prompt = f"""Evaluate if this event matches the user's requirements.
@@ -922,7 +948,7 @@ class FinalAction(BaseModel):
             return "Provided final answer"
 
 
-AgentActions = Union[ExtractUserIntentTool,SearchEventPageTitlesTool, SelectEventFileTool,
+AgentActions = Union[ParseUserQueryTool,SearchEventPageTitlesTool, SelectEventFileTool,
                      ReadEventFileTool, EvaluateEventTool, FinalAction]
 
 
@@ -932,7 +958,7 @@ DependencyManager.model_rebuild()
 UserIntentDateTime.model_rebuild()
 UserIntentKeyWord.model_rebuild()
 UserIntent.model_rebuild()
-ExtractUserIntentTool.model_rebuild()
+ParseUserQueryTool.model_rebuild()
 EventTitleResult.model_rebuild()
 SearchEventPageTitlesTool.model_rebuild()
 EventDetailsStart.model_rebuild()
@@ -965,28 +991,27 @@ Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 
 You have access to these tools:
 
-1. get_query_details - Extract what the user is looking for (keywords, location, dates)
+1. parse_user_query - Extract what the user is looking for (keywords, location, dates)
    Use this FIRST to understand the request.
    Only re-run if you exhaust all other options.
 
 2. search_event_pages - Search event database using keyword embeddings
    Returns multiple results ranked by relevance
 
-3. select_event_file - Select the next most relevant event from search results
+3. select_best_event_file - Select the next most relevant event from search results
    Automatically picks the best unreviewed option
 
-4. read_event_file - Read full details of the selected event
+4. read_event_file_contents - Read full details of the selected event
    Extracts structured information including dates, location, type
 
-5. evaluate_event - Check if the event matches user requirements
-   Uses AI to understand nuanced matching (e.g., "Ursus" is in Warsaw)
+5. evaluate_event_details_against_user_query - Evaluate whether the event details match the user requirements
 
 6. final_answer - Provide the final response to the user
    Can report success, no matches, or partial matches
 
 WORKFLOW GUIDANCE:
-- Always start by extracting user intent
-- After searching, work through results systematically
+- Always start by parsing user query with parse_user_query
+- Search for the best matching event using search_event_pages, load and evaluate them with evaluate_event_details_against_user_query
 - If an event doesn't match, try the next one
 - The tools handle complex matching (districts within cities, date flexibility, event type synonyms)
 - Continue until you find a match or exhaust reasonable options
@@ -1052,7 +1077,8 @@ class MyAgent:
                     response_model=AgentActions,
                     messages= self.conversation_history,
                     max_retries=self.deps.max_retries,
-                    max_tokens=4096
+                    max_tokens=4096,
+                    temperature=0.1
                 )
 
                 self._log(f"Action: {action.action_type}\n")
@@ -1061,8 +1087,14 @@ class MyAgent:
                 results = action.execute(state=self.state, deps=self.deps)
 
                 summary = action.summarise(results)
-                action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {summary}"
-
+                # action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {summary}"
+                action_summary = f"Action: {action.action_type}\nResult: {summary}"
+                print(" ")
+                print("="*30)
+                print("ACTION SUMMARY")
+                print(f"\n\n{action_summary}\n\n")
+                print("="*30)
+                print(" ")
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": action_summary
