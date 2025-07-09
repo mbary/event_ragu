@@ -693,6 +693,7 @@ class FinalAction(BaseModel):
             answer+=f"**{best_event_overall['title']}**\n"
             answer+=f"**Date:** {self._format_date(best_event_overall['date'])}"
             answer+=f"**Location:** {best_event_overall['location']}\n"
+            answer+=f"More details can be found here: {best_event_overall['source_url']}\n\n"
             answer+=f"**Why this is a good match:**\n*{best_event_overall['reasons']}*"
 
             return answer
@@ -702,6 +703,7 @@ class FinalAction(BaseModel):
             answer+=f"**{best_event_overall['title']}**\n"
             answer+=f"**Date:** {self._format_date(best_event_overall['date'])}"
             answer+=f"**Location:** {best_event_overall['location']}\n"
+            answer+=f"More details can be found here: {best_event_overall['source_url']}\n\n"
             answer+=f"**Please note why this isn't a perfect match:**\n*{best_event_overall['reasons']}*\n"
             answer+="This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
 
@@ -882,7 +884,7 @@ class MyAgent:
                 if isinstance(action, FinalAction):
                     answer = action.execute(state=self.state, deps=self.deps)
                     print("="*30)
-                    self._log(f"\nFinal Answer: {answer}")
+                    # self._log(f"\nFinal Answer: {answer}")
                     self._log(f"Thought: {action.think} ")
                     print("="*30)
                     return answer
@@ -915,7 +917,7 @@ class MyAgent:
             )
             answer = final_action.execute(state=self.state, deps=self.deps)
             self._log(f"\nFinal Thought: {final_action.think}")
-            self._log(f"Final Answer: {answer}")
+            # self._log(f"Final Answer: {answer}")
             return answer
         
         except Exception as e:
