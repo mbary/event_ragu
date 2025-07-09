@@ -1033,9 +1033,7 @@ class MyAgent:
         self.state = StateManager()
 
         self.deps = DependencyManager(
-            client=instructor.from_openai(OpenAI(),
-                                          mode=instructor.Mode.TOOLS_STRICT
-                                          ),
+            client=instructor.from_openai(OpenAI()),
             max_retries=5,
             collection=init_collection(),
             model=model,
