@@ -45,7 +45,9 @@ class StateManager(BaseModel):
     selected_page_id: Optional[str] = Field(description="The current page_id being processed"
                                             , default=None)
 
-    read_event_pages: Set = Field(description="List of event page_ids that have been read", default_factory=set)
+    read_event_page_ids: Set = Field(description="List of event page_ids that have been read", default_factory=set)
+    read_event_pages_content_dict: Dict = Field(description="Dictionary of event pages that have been read with their contents", default_factory=dict)
+
     event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file"
                                                     , default=None)
     evaluated_page_ids: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
@@ -61,9 +63,12 @@ class DependencyManager(BaseModel):
     """A class to manage shared dependencies and configurations for the agent."""
     client: Any = Field(description="The instructor client used for LLM interactions")
     collection: chromadb.Collection = Field(description="ChromaDB collection for storing event pages and their embeddings")
-    model: str = Field(description="The LLM model to use for interactions")
+    main_model: str = Field(description="The LLM model to use for interactions")
     event_dir: Path = Field(description="Directory where event files are stored")
     max_retries: int = Field(default=5, description="Maximum number of retries for LLM calls")
+    parsing_model: str = Field(description="The model to use for parsing user queries")
+    reading_model: str = Field(description="The model to use for reading event file contents")
+    evaluation_model: str = Field(description="The model to use for evaluating event details against user intent")
 
 #########################
 ###### User Intent ######
@@ -144,7 +149,7 @@ class ParseUserQueryTool(BaseModel):
         user_query = state.original_query
         
         intent = deps.client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=deps.parsing_model,
             response_model=UserIntent,
             max_retries=deps.max_retries,
             messages=[
@@ -342,7 +347,7 @@ class SelectEventFileTool(BaseModel):
     def _get_page_id(self, keyword: str, state: StateManager) -> str:
         """Get the page_id of the selected event file."""
         try:
-            page_id = min([res for res in state.search_title_results[keyword]["results"] if res.page_id not in state.read_event_pages],
+            page_id = min([res for res in state.search_title_results[keyword]["results"] if res.page_id not in state.read_event_page_ids],
                         key=lambda x: x.distance).page_id
 
             return page_id
@@ -419,7 +424,7 @@ class ReadEventFileTool(BaseModel):
                                     """
 
             parsed_event = deps.client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model=deps.reading_model,
                 response_model=EventDetails,
                 messages=[
                     {"role": "system", "content": "You are an expert at extracting and structuring event information. Use your knowledge of cities, venues, and event types to provide complete information."},
@@ -459,7 +464,8 @@ class ReadEventFileTool(BaseModel):
             if event_dict.get('target_audience'):
                 summary_data["summary"]["audience"] = event_dict['target_audience']
 
-            state.read_event_pages.add(page_id)
+            state.read_event_page_ids.add(page_id)
+            state.read_event_pages_content_dict[page_id] = event_dict
             
             return summary_data
             
@@ -496,6 +502,8 @@ class ReadEventFileTool(BaseModel):
 class EventEvaluation(BaseModel):
     """Structured evaluation result"""
     matches: bool = Field(description="Overall match determination")
+    page_id: Optional[str] = None
+    title: Optional[str] = None
     match_confidence: float = Field(ge=0, le=1, 
                                     description="""Confidence score 0-1 based on:
                                     1.0 = Perfect match (all criteria met)
@@ -522,28 +530,10 @@ class EventEvaluation(BaseModel):
 
 class EvaluateEventTool(BaseModel):
     """Use this AFTER reading an event's contents with 'read_event_file_contents' to determine if it's a good match for the user.
-    
-    Args:
-        user_requirements (UserIntent): The user's requirements extracted from the original query.
-        event_details (Dict[str, Any]): The structured event information extracted from the file.
+    Compares the most recently read event (from the state) against the user's initial requirements (also from the state).
 
     Returns:
         EventEvaluation: The evaluation result containing match confidence, reasoning, and recommendations.
-    
-    Example:
-        { "matches": True,
-          "match_confidence": 0.85,
-          "theme_evaluation": "The event theme aligns with the user's interests.",
-          "theme_matches": True,
-          "date_evaluation": "The event date is within the user's specified timeframe.",
-          "date_matches": True,
-          "location_evaluation": "The event is in the user's specified city.",
-          "location_matches": True,
-          "type_evaluation": "The event type matches the user's interests.",
-          "type_matches": True,
-          "overall_reasoning": "The event matches the user's requirements based on date, location, and type.",
-          "recommendation": "Proceed with this event as it matches the user's requirements."
-        }
     """
     action_type: Literal["evaluate_event_details_against_user_query"] = "evaluate_event_details_against_user_query"
     think: str = Field(description="What aspects need careful evaluation")
@@ -568,7 +558,7 @@ class EvaluateEventTool(BaseModel):
                                 - Date: {state.event_details['parsed']['start_datetime']['date']}
                                 - Location: {state.event_details['parsed']['location']}
                                 - City: {state.event_details['parsed']['city']}
-                                - Description: {state.event_details['parsed']['description']}
+                                - Description: {state.event_details['parsed']['description']}                        
 
                                 Consider:
                                 1. Theme/Subject Matter: First evaluate the core subject. Is the event about the user's topic of interest?
@@ -585,7 +575,7 @@ class EvaluateEventTool(BaseModel):
 
         try:
             evaluation = deps.client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model=deps.evaluation_model,
                 response_model=EventEvaluation,
                 messages=[
                     {"role": "system", "content": "You are evaluating if events match user requirements. Use your knowledge of geography, dates, and event types."},
@@ -593,45 +583,35 @@ class EvaluateEventTool(BaseModel):
                 ],
                 max_retries=deps.max_retries,
                 temperature=0.1)
-            
-            result = evaluation.model_dump()
-            result["page_id"] = state.event_details["page_id"]
-            result["event_title"] = state.event_details['parsed']['title']
 
-            state.last_evaluation = result
+            eval_dict = evaluation.model_dump()
+            eval_dict["page_id"] = state.event_details["page_id"]
+            eval_dict["title"] = state.event_details['parsed']['title']
+            
+            state.last_evaluation = eval_dict
             state.evaluated_page_ids.append(state.event_details["page_id"])
-            state.evaluation_history.append({
-                                            "page_id": state.event_details["page_id"],
-                                            "title": state.event_details["parsed"]["title"],
-                                            "confidence": result["match_confidence"],
-                                            "reasons": result["overall_reasoning"],
-                                            "date": state.event_details["parsed"]["start_datetime"]["date"],
-                                            "location": f"{state.event_details['parsed']['location']}, {state.event_details['parsed']['city']}",
-                                            "source_url": state.event_details["source_url"],
-                                            "matches": result["matches"],
-                                            "theme_matches": result["theme_matches"],
-                                            "type_matches": result["type_matches"],
-                                            "date_matches": result["date_matches"],
-                                            "location_matches": result["location_matches"],
-                                            "type_matches": result["type_matches"],
-                                            })
-            return result 
+            state.evaluation_history.append(eval_dict)
+
+            evaluation.page_id = state.event_details["page_id"]
+            evaluation.title = state.event_details['parsed']['title']
+            return evaluation
             
         except Exception as e:
-            return {"error": f"Evaluation failed: {str(e)}"}
+            return {"error": f"Evaluation failed: {str(e)}",
+                    "suggested_action": "Try a different approach or select another file."}
     
-    def summarise(self, result: Dict[str, Any]) -> str:
+    def summarise(self, result: Union[EventEvaluation, Dict[str, str]]) -> str:
         """Create conversation summary"""
-        if "error" in result:
+        if isinstance(result, dict) and "error" in result:
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
-        if result["matches"]:
-            summary = f"Event '{result['event_title']}' matches! ({result['match_confidence']:.0%} confident) - {result['overall_reasoning']}"
+        if result.matches:
+            summary = f"Event '{getattr(result, 'title', 'N/A')}' matches! ({result.match_confidence:.0%} confident) - {result.overall_reasoning}"
             summary += " The next step is to use 'final_answer' to present this result to the user."
             return summary
         
         else:
-            summary = f"Event '{result['event_title']}' doesn't match - {result['overall_reasoning']}."
+            summary = f"Event '{getattr(result, 'title', 'N/A')}' doesn't match - {result.overall_reasoning}."
             summary += "\nThe next step is to use 'select_best_event_file' to pick the next best event from the search results and repeat the process."
             return summary
         
@@ -669,22 +649,26 @@ class FinalAction(BaseModel):
         best_event_overall = sorted(state.evaluation_history, key=sorting_key, reverse=True)[0]
 
         if best_event_overall.get('matches', False):
-            answer="After reviewing the options, I found an event that's a great match for your request!\n"
-            answer+=f"**{best_event_overall['title']}**\n"
-            answer+=f"**Date:** {self._format_date(best_event_overall['date'])}"
-            answer+=f"**Location:** {best_event_overall['location']}\n"
-            answer+=f"More details can be found here: {best_event_overall['source_url']}\n\n"
-            answer+=f"**Why this is a good match:**\n*{best_event_overall['reasons']}*"
+            best_page_id = best_event_overall['page_id']
+            best_event_details = state.read_event_pages_content_dict[best_page_id]
+            answer="After reviewing the options, I found an event that's a great match for your request!\n\n\n"
+            answer+=f"\tTitle:  {best_event_details['title']}\n\n"
+            answer+=f"\tDate:  {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
+            answer+=f"\tLocation:  {best_event_details['location']}\n"
+            answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
+            answer+=f"Why this is a good match:**\n*{best_event_overall['overall_reasoning']}"
 
             return answer
         
         else:
-            answer="I couldn't find a perfect match for your request. However, after reviewing all the options, here is the closest alternative I found:\n"
-            answer+=f"**{best_event_overall['title']}**\n"
-            answer+=f"**Date:** {self._format_date(best_event_overall['date'])}"
-            answer+=f"**Location:** {best_event_overall['location']}\n"
-            answer+=f"More details can be found here: {best_event_overall['source_url']}\n\n"
-            answer+=f"**Please note why this isn't a perfect match:**\n*{best_event_overall['reasons']}*\n"
+            best_page_id = best_event_overall['page_id']
+            best_event_details = state.read_event_pages_content_dict[best_page_id]
+            answer="I couldn't find a perfect match for your request. However, after reviewing all the options, here is the closest alternative I found:\n\n\n"
+            answer+=f"\tTitle {best_event_details['title']}\n\n"
+            answer+=f"\tDate: {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
+            answer+=f"\tLocation: {best_event_details['location']}\n\n"
+            answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
+            answer+=f"Please note why this isn't a perfect match:\n{best_event_overall['overall_reasoning']}\n"
             answer+="This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
 
             return answer
@@ -723,14 +707,6 @@ SelectEventFileTool.model_rebuild()
 ReadEventFileTool.model_rebuild()
 EventEvaluation.model_rebuild()
 EvaluateEventTool.model_rebuild()
-
-
-keys = ["user_intent","current_search_keyword","exhausted_search_keywords","selected_page_id","read_event_pages","event_details","last_evaluation","evaluated_page_ids","evaluation_history"]
-
-def get_subset(chuj, keys):
-    data = chuj.model_dump()
-    return {k: data[k] for k in keys}
-
 
 
 ####################################################################
@@ -780,7 +756,12 @@ IMPORTANT:
 class MyAgent:
     """A simple AI agent that can search for event pages."""
     
-    def __init__(self, model: str = "gpt-4.1-mini", verbose: bool = True):
+    def __init__(self, 
+                 main_model: str = "gpt-4.1-mini",
+                 reading_model: str = "gpt-4.1-mini",
+                 parsing_model: str = "gpt-4.1-mini" , 
+                 evaluation_model: str = "gpt-4.1-mini",
+                 verbose: bool = True):
 
         self.verbose = verbose
         self.state = StateManager()
@@ -789,7 +770,11 @@ class MyAgent:
             client=instructor.from_openai(OpenAI()),
             max_retries=5,
             collection=init_collection(),
-            model=model,
+            main_model=main_model,
+            parsing_model=parsing_model,
+            evaluation_model=evaluation_model,
+            reading_model=reading_model,
+            
             event_dir=EVENT_DIR)
         
         self.conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -824,7 +809,7 @@ class MyAgent:
             self._log(f"\n----- Step {step_num + 1} -----\n")
             try:
                 action = self.deps.client.chat.completions.create(
-                    model=self.deps.model,
+                    model=self.deps.main_model,
                     response_model=AgentActions,
                     messages= self.conversation_history,
                     max_retries=self.deps.max_retries,
@@ -839,11 +824,10 @@ class MyAgent:
 
                 summary = action.summarise(results)
                 action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {summary}"
-                print(" ")
+                print("\n ")
                 print("="*30)
                 print("ACTION SUMMARY")
                 print(f"\n\n{action_summary}\n\n")
-                print("="*30)
                 print(" ")
                 self.conversation_history.append({
                     "role": "assistant",
@@ -864,9 +848,10 @@ class MyAgent:
                     self._log(f"Thought: {action.think} ")
                     print("="*30)
                     return answer
-
-                pprint(get_subset(self.state,keys))
+                # pprint(self.state.model_dump())
             except Exception as e:
+                # raise e
+                # break
                 self._log(f"Error during action generation: {e}")
                 self.conversation_history.append({
                     "role": "assistant",
@@ -884,7 +869,7 @@ class MyAgent:
 
         try:
             final_action = self.deps.client.chat.completions.create(
-                model=self.deps.model,
+                model=self.deps.main_model,
                 response_model=FinalAction,
                 messages=self.conversation_history,
                 max_retries=self.deps.max_retries,
@@ -917,7 +902,7 @@ if __name__ == "__main__":
             if user_query.lower() == 'exit':
                 break
             
-            agent = MyAgent(model="gpt-4.1-mini", verbose=True)
+            agent = MyAgent(main_model="gpt-4.1-mini", verbose=True)
             final_answer = agent.step(user_query)
             print(f"\nFinal Answer: {final_answer}")
             print("\n")
