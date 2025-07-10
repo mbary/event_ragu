@@ -538,7 +538,7 @@ class EvaluateEventTool(BaseModel):
     action_type: Literal["evaluate_event_details_against_user_query"] = "evaluate_event_details_against_user_query"
     think: str = Field(description="What aspects need careful evaluation")
     
-    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
+    def execute(self, state: StateManager, deps: DependencyManager) -> EventEvaluation:
         if not state.event_details:
             return {"error": "No event details found. Please read an event file first.", 
                     "suggested_action": "read_event_file_contents"}
