@@ -84,7 +84,7 @@ class UserIntentDateTime(BaseModel):
     
 class UserIntentKeyWord(BaseModel):
     """Class represents a keyword and associated confidence extracted from the user query."""
-    keyword: str = Field(description="A keyword extracted from the user query.")
+    keyword: str = Field(description="A keyword identifying an event type or activity.")
     confidence: float = Field(ge=0, le=1, description="Confidence score of the keyword extraction (0-1).")
     
 class UserIntent(BaseModel):
@@ -95,7 +95,7 @@ class UserIntent(BaseModel):
     
     query_refined: str = Field(description="A refined user query.")
 
-    timeframe: UserIntentDateTime = Field(description="The timeframe for the event search", 
+    timeframe: UserIntentDateTime = Field(description="The desired date/time for the event in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ)", 
                                           examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
 
     city: str = Field(description="The city where the user wants to find events.")
@@ -105,23 +105,13 @@ class UserIntent(BaseModel):
                                             "Centrum Nauki Kopernik",
                                             "Park","Teatr","Opera"])
 
-    keywords: List[UserIntentKeyWord] = Field(description="A list of keywords, specifically related to the event, to refine the search.",
+    keywords: List[UserIntentKeyWord] = Field(description="Keywords that identify the type of event or activity being sought.",
                                               examples=["concert", "exhibition", "theater", "art", "music"], 
                                               max_length=5, 
                                               min_length=1)
 
 class ParseUserQueryTool(BaseModel):
-    """Parse user query extracting user requirements.
-    
-    Args:
-        user_query (str): The user's query to extract intent from.
-    
-    Returns:
-        UserIntent: The extracted user requirements containing keywords, timeframe, city, and location.
-
-    Example:
-        "Gdzie mogę najwczesniej oddac krew w warszawie?" -> {"timeframe": "2025-10-01T00:00:00Z", "city": "Warszawa", "keywords": ["oddac krew", "warszawa"]}
-    """
+    """Parse user query extracting user requirements."""
     think: str = Field(description="Why is this extraction needed and what information is sought")
     action_type: Literal["parse_user_query"] = "parse_user_query"
 
@@ -164,7 +154,8 @@ class ParseUserQueryTool(BaseModel):
     def summarise(self, result: UserIntent) -> str:
         """Create action summary"""
         if not result:
-            return {"error": "No user intent extracted. Please check the user query."}
+            return {"error": "No user intent extracted. Please check the user query.",
+                    "suggested_action": "Try parsing the user query again with 'parse_user_query'"}
         
         summary = f"Think: {result.think}\n"
         summary += f"Extracted user intent:\n"
@@ -189,21 +180,8 @@ class EventTitleResult(BaseModel):
 
 class SearchEventPageTitlesTool(BaseModel):
     """Search for top 10 relevant event pages using title embedding similarity. Use this to get an initial list of potential events. 
-       DO NOT use this if you have already selected a specific file and need to read its contents.
-
-    Args:
-        keywords (List[str]): List of keywords to search for in event titles.
-    Returns:
-        Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]: A dictionary with keywords as keys and a dictionary of results as values.
-    Example:
-        {'bieg': {'min_distance': 0.396332323551178,
-                    'results': [EventPageResult(page_id='biegaj_z_team_zabieganedni_00128', title='biegaj z team zabieganedni', distance=0.396332323551178),
-                                EventPageResult(page_id='bieg_po_nowe_życie_00239', title='bieg po nowe życie', distance=0.43145501613616943)
-                                ]
-                    }
-        }
-    """
-    think: str = Field(description="Why is this search needed abd what information is sought")
+       DO NOT use this if you have already selected a specific file and need to read its contents."""
+    think: str = Field(description="Why is this search needed and what information is sought")
     action_type: Literal["search_event_pages"] = "search_event_pages"
 
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
@@ -267,13 +245,13 @@ class SearchEventPageTitlesTool(BaseModel):
 
 class EventDetailsStart(BaseModel):
     """Represents the start date and time of an event."""
-    date: datetime = Field(description="The datetime extracted from the event file in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
+    date: datetime = Field(description="The event start date/time in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
                         examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
     confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
 
 class EventDetailsEnd(BaseModel):
     """Represents the end date and time of an event."""
-    date: datetime = Field(description="The datetime extracted from the event file in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
+    date: datetime = Field(description="The event end date/time in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
                         examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
     confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
 
@@ -303,21 +281,11 @@ class EventDetails(BaseModel):
 ##########################################
 
 class SelectEventFileTool(BaseModel):
-    """Select the event file with the smallest distance measure.
-    
-    Args:
-        results_dict (Dict[str, Union[float, SearchEventPagesOutput]]): Dictionary containing the results of the search.
-    
-    Returns:
-        page_id (str): The page_id of the selected event file.
-    """
+    """Select the event file with the smallest distance measure."""
     think: str = Field(description="I should select the event file based on the smallest distance measure.")
     action_type: Literal["select_best_event_file"] = "select_best_event_file"
 
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
-        print("="*30)
-        print("Selecting event file based on smallest distance measure.")
-
         if not state.search_title_results:
             return {"error": "No search results found. Please perform a search first using search_event_pages.",
                     "suggested_action": "search_event_pages"}
@@ -364,35 +332,8 @@ class SelectEventFileTool(BaseModel):
 
 
 class ReadEventFileTool(BaseModel):
-    """Use this tool to read the full contents of a specific event file AFTER it has been chosen by 'select_best_event_file'.
+    """Use this tool to read the full contents of a specific event file AFTER it has been chosen by 'select_best_event_file'."""
 
-    Args:
-        page_id (str): The page_id of the event file selected by select_best_event_file.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing the structured event information extracted from the file.
-
-    Example:
-        "concert_00123"->   {
-                                "page_id": "concert_00123",
-                                "raw_content": "Full content of the event file",
-                                "parsed": {
-                                    "title": "Concert Title",
-                                    "event_type": "concert",
-                                    "start_datetime": {"date": "2025-10-01T18:00:00Z", "confidence": 0.95},
-                                    "end_datetime": {"date": "2025-10-01T20:00:00Z", "confidence": 0.90},
-                                    "location": "Venue Name",
-                                    "city": "Warsaw",
-                                    "district": "Mokotów",
-                                    "description": "Detailed description of the event.",
-                                    "summary": "Brief summary of the event.",
-                                    "target_audience": "General public",
-                                    "price_info": "$20 - $50",
-                                    "source_url": None
-                                },
-                                "file_path": "/path/to/event_file.md"
-                            }
-    """
     action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
     think: str = Field(description="Why reading this specific event file")
     
@@ -635,7 +576,7 @@ class FinalAction(BaseModel):
             answer = "I'm sorry, but my search for events matching your request came up empty.\n"
             if intent:
                 keywords = [kw.keyword for kw in intent.keywords]
-                answer+=f"**I was looking for:** An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.timeframe.strftime('%B %Y')}."
+                answer+=f"I was looking for: An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.timeframe.strftime('%B %Y')}."
                 
             answer+="\nThere may be no events of this type listed, or you could try searching with different keywords."
             return answer
@@ -656,7 +597,7 @@ class FinalAction(BaseModel):
             answer+=f"\tDate:  {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
             answer+=f"\tLocation:  {best_event_details['location']}\n"
             answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
-            answer+=f"Why this is a good match:**\n*{best_event_overall['overall_reasoning']}"
+            answer+=f"Why this is a good match:\n{best_event_overall['overall_reasoning']}"
 
             return answer
         
@@ -719,7 +660,6 @@ SYSTEM_PROMPT = f"""You are an AI assistant specialized in finding local events 
 Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 
 You have access to these tools:
-
 1. parse_user_query - Extract what the user is looking for (keywords, location, dates)
    Use this FIRST to understand the request.
    Only re-run if you exhaust all other options.
@@ -737,6 +677,10 @@ You have access to these tools:
 
 6. final_answer - Provide the final response to the user
    Can report success, no matches, or partial matches
+
+Each tool requires:
+- think: Your reasoning for this action
+- action_type: The exact tool name from above
 
 WORKFLOW GUIDANCE:
 - Always start by parsing user query with parse_user_query
@@ -816,19 +760,12 @@ class MyAgent:
                     max_tokens=4096,
                     temperature=0.1
                 )
-
-                self._log(f"Action: {action.action_type}\n")
-                self._log(f"Thought: {action.think}")
-
                 results = action.execute(state=self.state, deps=self.deps)
 
                 summary = action.summarise(results)
-                action_summary = f"Action: {action.action_type}\nThink: {action.think}\nResult: {summary}"
-                print("\n ")
-                print("="*30)
-                print("ACTION SUMMARY")
-                print(f"\n\n{action_summary}\n\n")
-                print(" ")
+                action_summary = f"Action: {action.action_type}\n\nThink: {action.think}\n\nResult: {summary}\n"
+                self._log(action_summary)
+                
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": action_summary
@@ -844,14 +781,9 @@ class MyAgent:
 
                 if isinstance(action, FinalAction):
                     answer = action.execute(state=self.state, deps=self.deps)
-                    print("="*30)
-                    self._log(f"Thought: {action.think} ")
-                    print("="*30)
                     return answer
                 # pprint(self.state.model_dump())
-            except Exception as e:
-                # raise e
-                # break
+            except Exception as e:                
                 self._log(f"Error during action generation: {e}")
                 self.conversation_history.append({
                     "role": "assistant",
