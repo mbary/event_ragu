@@ -628,7 +628,7 @@ class FinalAction(BaseModel):
             answer = "I'm sorry, but my search for events matching your request came up empty.\n"
             if intent:
                 keywords = [kw.keyword for kw in intent.keywords]
-                answer+=f"I was looking for: An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.timeframe.strftime('%B %Y')} and {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}."
+                answer+=f"I was looking for: An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.start_date.strftime('%B %Y')} and {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}."
                 
             answer+="\nThere may be no events of this type listed, or you could try searching with different keywords."
             return answer
