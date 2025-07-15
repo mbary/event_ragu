@@ -473,7 +473,7 @@ class ReadEventFileTool(BaseModel):
             f"({summary['type']})",
             f"on {summary['date']}",
             f"at {summary['location']},",
-            f"Summary: {summary['brief']}"
+            f"Summary: {summary['brief'][:100]}"
         ]
 
         if summary.get('price'):
