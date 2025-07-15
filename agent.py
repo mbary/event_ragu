@@ -77,13 +77,9 @@ class DependencyManager(BaseModel):
 class UserIntentDateTime(BaseModel):
     """Class represents the datetime information extracted from the user query."""
     start_date: date = Field(
-            description="The start date extracted from the user query in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
-            # examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"]
-            )
+            description="The start date extracted from the user query in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).")
     end_date: Optional[date] = Field(
-            description="The end date extracted from the user query in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
-            # examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"]
-            )
+            description="The end date extracted from the user query in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).")
     confidence: float = Field(ge=0, le=1,
                                 description="Confidence score of the datetime extraction (0-1).")
     
@@ -95,14 +91,11 @@ class UserIntentKeyWord(BaseModel):
 class UserIntent(BaseModel):
     """Represents the user's intent for the event search."""
     think: str = Field(
-        description="A thought process or reasoning behind the user's intent extraction.",
-        examples=["What does the user intend to do?"])
+        description="A thought process or reasoning behind the user's intent extraction.")
     
     query_refined: str = Field(description="A refined user query.")
 
-    timeframe: UserIntentDateTime = Field(description="The desired start and end date for the event in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ)", 
-                                        #   examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"]
-                                          )
+    timeframe: UserIntentDateTime = Field(description="The desired start and end date for the event in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ)")
 
     city: str = Field(description="The city where the user wants to find events.")
 
@@ -112,7 +105,6 @@ class UserIntent(BaseModel):
                                             "Park","Teatr","Opera"])
 
     keywords: List[UserIntentKeyWord] = Field(description="Keywords that identify the type of event or activity being sought.",
-                                              examples=["concert", "exhibition", "theater", "art", "music"], 
                                               max_length=5, 
                                               min_length=1)
 
@@ -270,14 +262,12 @@ class SearchEventPageTitlesTool(BaseModel):
 
 class EventDetailsStart(BaseModel):
     """Represents the start date and time of an event."""
-    date: datetime = Field(description="The event start date/time in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
-                        examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
+    date: datetime = Field(description="The event start date/time in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).")
     confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
 
 class EventDetailsEnd(BaseModel):
     """Represents the end date and time of an event."""
-    date: datetime = Field(description="The event end date/time in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).",
-                        examples=["2025-10-01", "2025-10-01T18:00:00Z", "2028-04-26"])
+    date: datetime = Field(description="The event end date/time in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).")
     confidence: float = Field(ge=0, le=1, description="Confidence score of the datetime extraction (0-1).")
 
 class RecurringDates(BaseModel):
@@ -396,6 +386,7 @@ class ReadEventFileTool(BaseModel):
                                     - Create a brief 1-2 sentence summary
                                     - Extract any pricing, audience, or registration information
                                     - Use your knowledge to infer missing information when reasonable
+                                    - Always provide answers in Polish language
 
                                     Date Extraction Rules:
                                     1. If an event has recurring dates -> start_date = the date closest to user- defined timeframe.
@@ -564,7 +555,8 @@ class EvaluateEventTool(BaseModel):
                                 5. User's likely intent even if not explicitly stated
                                 6. Overall Match: An event can be a good overall match even if the type is different, as long as the theme is correct.
 
-                                Be somewhat flexible but not overly permissive."""
+                                Be somewhat flexible but not overly permissive.
+                                Always provide answers in Polish language"""
         # print(evaluation_prompt)
         try:
             evaluation = deps.client.chat.completions.create(
@@ -651,7 +643,8 @@ class FinalAction(BaseModel):
             answer+=f"\tTitle:  {best_event_details['title']}\n\n"
             answer+=f"\tDate:  {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
             answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
-            answer+=f"\tLocation:  {best_event_details['location']}\n"
+            answer+=f"\tLocation:  {best_event_details['location']}\n\n"
+            answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
             answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
             answer+=f"Why this is a good match:\n{best_event_overall['overall_reasoning']}"
 
@@ -661,10 +654,11 @@ class FinalAction(BaseModel):
             best_page_id = best_event_overall['page_id']
             best_event_details = state.read_event_pages_content_dict[best_page_id]
             answer="I couldn't find a perfect match for your request. However, after reviewing all the options, here is the closest alternative I found:\n\n\n"
-            answer+=f"\tTitle {best_event_details['title']}\n\n"
+            answer+=f"\tTitle: {best_event_details['title']}\n\n"
             answer+=f"\tStart Date: {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
             answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
             answer+=f"\tLocation: {best_event_details['location']}\n\n"
+            answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
             answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
             answer+=f"Please note why this isn't a perfect match:\n{best_event_overall['overall_reasoning']}\n"
             answer+="This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
@@ -745,7 +739,7 @@ WORKFLOW GUIDANCE:
 - If an event doesn't match, try the next one
 - The tools handle complex matching (districts within cities, date flexibility, event type synonyms)
 - Continue until you find a match or exhaust reasonable options
-- Always reason and provide answers in Polish
+- Always provide answers in Polish language
 
 IMPORTANT:
 - Trust the evaluation tool's judgment about matches
