@@ -151,8 +151,6 @@ class ParseUserQueryTool(BaseModel):
 
         All responses **MUST** be in Polish language.
         """
-        # print(SYSTEM_PROMPT_INTENT_EXTRACTION)
-
         user_query = state.original_query
         
         intent = deps.client.chat.completions.create(
@@ -213,7 +211,6 @@ class SearchEventPageTitlesTool(BaseModel):
         final_dict = {}
 
         for keyword in keywords:
-            print(f"Searching for keyword: {keyword}")
             kw_dict = {}
             kw_results = deps.collection.query(
                 query_texts=[keyword],
@@ -403,16 +400,11 @@ class ReadEventFileTool(BaseModel):
                 temperature=0.0
             )
             event_dict = parsed_event.model_dump()
-            # print("=" * 30)
-            # print("")
-            # print("EVENT DICT ")
-            # pprint(event_dict)
             event_dict["start_datetime"]["date"] = event_dict["start_datetime"]["date"].isoformat()
             event_dict["end_datetime"]["date"] = event_dict["end_datetime"]["date"].isoformat()
             if event_dict.get("recurring_dates"):
                 event_dict["recurring_dates"] = [_date.isoformat() for _date in event_dict["recurring_dates"].get("all_dates", [])]
-            # event_dict["recurring_dates"] = [_date.isoformat() for _date in event_dict.get("recurring_dates", {}).get("all_dates", [])]
-            
+
             state.event_details = {
                 "page_id": page_id,
                 "raw_content": raw_content,
@@ -448,7 +440,6 @@ class ReadEventFileTool(BaseModel):
             return {"error": f"Event file not found: {page_id}.md",
                     "suggeste_action":"Select another file using select_best_event_file"}
         except Exception as e:
-            # print(str(e))
             return {"error": f"Failed to read or parse event file: {str(e)}",
                     "suggested_action": "No idea mate, think of something"} ##TODO correct this XD 
     
@@ -557,7 +548,6 @@ class EvaluateEventTool(BaseModel):
 
                                 Be somewhat flexible but not overly permissive.
                                 Always provide answers in Polish language"""
-        # print(evaluation_prompt)
         try:
             evaluation = deps.client.chat.completions.create(
                 model=deps.evaluation_model,
@@ -632,10 +622,7 @@ class FinalAction(BaseModel):
                                e.get('confidence', 0))
 
         best_event_overall = sorted(state.evaluation_history, key=sorting_key, reverse=True)[0]
-        # print("="*30)
-        # print(" ")
-        # print("Best Event Overall:")
-        # pprint(best_event_overall)
+
         if best_event_overall["matches"].get('matches', False):
             best_page_id = best_event_overall['page_id']
             best_event_details = state.read_event_pages_content_dict[best_page_id]
@@ -833,7 +820,7 @@ class MyAgent:
                 if isinstance(action, FinalAction):
                     answer = action.execute(state=self.state, deps=self.deps)
                     return answer
-                # pprint(self.state.model_dump())
+                
             except Exception as e:                
                 self._log(f"Error during action generation: {e}")
                 self.conversation_history.append({
