@@ -148,6 +148,9 @@ class ParseUserQueryTool(BaseModel):
         City Extraction Rules:
         1. If no city is mentioned -> city = Warsaw.
 
+        Keyword Extraction Rules:
+        1. Prioritise keywords relating to specific entities over general activities:
+            - A band name should be prioritised over a general activity like "concert".
 
         All responses **MUST** be in Polish language.
         """
@@ -207,7 +210,7 @@ class SearchEventPageTitlesTool(BaseModel):
         elif not state.user_intent.keywords:
             return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
                     "suggested_action": "parse_user_query"}
-        keywords = [k.keyword for k in state.user_intent.keywords]
+        keywords = [k.keyword.lower() for k in state.user_intent.keywords]
         final_dict = {}
 
         for keyword in keywords:
@@ -387,6 +390,7 @@ class ReadEventFileTool(BaseModel):
 
                                     Date Extraction Rules:
                                     1. If an event has recurring dates -> start_date = the date closest to user- defined timeframe.
+                                    2. If the event doesn't have recurring dates, but has a specific date mentioned -> start_date = that date.
                                     """
 
             parsed_event = deps.client.chat.completions.create(
@@ -630,6 +634,8 @@ class FinalAction(BaseModel):
             answer+=f"\tTitle:  {best_event_details['title']}\n\n"
             answer+=f"\tDate:  {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
             answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
+            if best_event_details.get('price_info'):
+                answer+=f"\tPrice: {best_event_details['price_info']}\n\n"
             answer+=f"\tLocation:  {best_event_details['location']}\n\n"
             answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
             answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
@@ -644,6 +650,8 @@ class FinalAction(BaseModel):
             answer+=f"\tTitle: {best_event_details['title']}\n\n"
             answer+=f"\tStart Date: {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
             answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
+            if best_event_details.get('price_info'):
+                answer+=f"\tPrice: {best_event_details['price_info']}\n\n"
             answer+=f"\tLocation: {best_event_details['location']}\n\n"
             answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
             answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
@@ -768,7 +776,7 @@ class MyAgent:
             print(message)
 
 
-    def step(self, user_query: str, max_steps: int = 15) -> str:
+    def step(self, user_query: str, max_steps: int = 30) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
         Necessary to answer the user's query.
@@ -803,7 +811,14 @@ class MyAgent:
                 summary = action.summarise(results)
                 action_summary = f"Action: {action.action_type}\n\nThink: {action.think}\n\nResult: {summary}\n"
                 self._log(action_summary)
-                
+                # print(self.state.model_dump_json(indent=2))
+                # print(self.state.user_intent)
+                pprint(self.state.search_title_results)
+                print(self.state.current_search_keyword)
+                print(self.state.exhausted_search_keywords)
+                print(self.state.selected_page_id)
+                print(self.state.read_event_page_ids)
+
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": action_summary
