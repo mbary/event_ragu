@@ -208,7 +208,6 @@ class SearchEventPageTitlesTool(BaseModel):
             return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
                     "suggested_action": "parse_user_query"}
         keywords = [k.keyword.lower() for k in state.user_intent.keywords]
-        final_dict = {}
         results = []
 
         for keyword in keywords:
@@ -217,19 +216,12 @@ class SearchEventPageTitlesTool(BaseModel):
                 query_texts=[keyword],
                 n_results=10)
 
-            output = []
             for i in range(len(kw_results['ids'][0])):
                 results.append(EventTitleResult(
                     page_id=kw_results['ids'][0][i],
                     title=kw_results['metadatas'][0][i]['title'],
                     distance=kw_results['distances'][0][i]
                 ))
-            
-            # kw_dict["results"] = output
-            # kw_dict["min_distance"] = min([res.distance for res in output])
-
-
-            # final_dict["_".join(keyword.split(" "))] = kw_dict
 
         state.search_title_results=results
 
@@ -237,7 +229,6 @@ class SearchEventPageTitlesTool(BaseModel):
     
     def summarise(self, results: List[EventTitleResult]) -> str:
         """summarise the search results."""
-        # keywords = list(results.keys())
 
         if "error" in results:
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
