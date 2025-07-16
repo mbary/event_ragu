@@ -31,33 +31,30 @@ EVENT_DIR = Path("data/events")
 class StateManager(BaseModel):
     """State manager to keep track of the conversation, extracted values and actions taken."""
 
-    original_query: Optional[str] = Field(description="The original user query that initiated the conversation"
-                                          , default=None)
+    original_query: Optional[str] = Field(description="The original user query that initiated the conversation",
+                                          default=None)
 
-    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query", default=None)
+    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query",
+                                              default=None)
     
-    search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
-                                       default_factory=dict)
-    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages"
-                                                  , default=None)
-    exhausted_search_keywords: Set[str] = Field(description="List of keywords that have been searched for and exhausted",
-                                                 default_factory=set)
-    selected_page_id: Optional[str] = Field(description="The current page_id being processed"
-                                            , default=None)
+    search_title_results: List = Field(description="List of event pages found using title embedding similarity search",
+                                       default_factory=list)                                       
+    selected_page_id: Optional[str] = Field(description="The current page_id being processed",
+                                            default=None)
 
-    read_event_page_ids: Set = Field(description="List of event page_ids that have been read", default_factory=set)
-    read_event_pages_content_dict: Dict = Field(description="Dictionary of event pages that have been read with their contents", default_factory=dict)
+    read_event_page_ids: Set = Field(description="List of event page_ids that have been read", 
+                                     default_factory=set)
+    read_event_pages_content_dict: Dict = Field(description="Dictionary of event pages that have been read with their contents",
+                                                default_factory=dict)
 
-    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file"
-                                                    , default=None)
+    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file",
+                                                    default=None)
     evaluated_page_ids: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
-    last_evaluation: EventEvaluation = Field(description="The last evaluation result of the event against user intent"
-                                                       , default=None)
-    evaluation_history: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="All evaluated events with details and confidence scores"
-    )
+    last_evaluation: EventEvaluation = Field(description="The last evaluation result of the event against user intent",
+                                             default=None)
+    evaluation_history: List[Dict[str, Any]] = Field(default_factory=list,
+                                                     description="All evaluated events with details and confidence scores")
 
 class DependencyManager(BaseModel):
     """A class to manage shared dependencies and configurations for the agent."""
@@ -202,7 +199,7 @@ class SearchEventPageTitlesTool(BaseModel):
     think: str = Field(description="Why is this search needed and what information is sought")
     action_type: Literal["search_event_pages"] = "search_event_pages"
 
-    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
+    def execute(self, state: StateManager, deps: DependencyManager) -> List[EventTitleResult]:
 
         if not state.user_intent:
             return {"error": "User intent not found in state. Please extract user intent first using parse_user_query tool.",
@@ -212,45 +209,40 @@ class SearchEventPageTitlesTool(BaseModel):
                     "suggested_action": "parse_user_query"}
         keywords = [k.keyword.lower() for k in state.user_intent.keywords]
         final_dict = {}
+        results = []
 
         for keyword in keywords:
-            kw_dict = {}
+            # kw_dict = {}
             kw_results = deps.collection.query(
                 query_texts=[keyword],
                 n_results=10)
 
             output = []
             for i in range(len(kw_results['ids'][0])):
-                output.append(EventTitleResult(
+                results.append(EventTitleResult(
                     page_id=kw_results['ids'][0][i],
                     title=kw_results['metadatas'][0][i]['title'],
                     distance=kw_results['distances'][0][i]
                 ))
             
-            kw_dict["results"] = output
-            kw_dict["min_distance"] = min([res.distance for res in output])
+            # kw_dict["results"] = output
+            # kw_dict["min_distance"] = min([res.distance for res in output])
 
 
-            final_dict["_".join(keyword.split(" "))] = kw_dict
+            # final_dict["_".join(keyword.split(" "))] = kw_dict
 
-        state.search_title_results.update(final_dict)
+        state.search_title_results=results
 
-        return final_dict
+        return results
     
-    def summarise(self, results: Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]) -> str:
+    def summarise(self, results: List[EventTitleResult]) -> str:
         """summarise the search results."""
-        keywords = list(results.keys())
+        # keywords = list(results.keys())
 
         if "error" in results:
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
-        summary = f'To search for event pages most relevant to the user query, I used the following keywords: {", ".join(keywords)}.\n'
-        summary += "Each keyword yielded the following results:\n"
-        for keyword in keywords:
-            summary += f"Keyword: {keyword}\n"
-            summary += f"Minimum Distance: {results[keyword]['min_distance']}\n"
-            summary += f"File count: {len(results[keyword]['results'])}\n"
-
+        summary = f'Searched for event pages most relevant to the user query'
         summary += "A list of potential events has been found. The next step is to use 'select_best_event_file' to pick the single most promising event to investigate further."
                     
         return summary
@@ -310,20 +302,12 @@ class SelectEventFileTool(BaseModel):
         if not state.search_title_results:
             return {"error": "No search results found. Please perform a search first using search_event_pages.",
                     "suggested_action": "search_event_pages"}
-        
-        if not state.current_search_keyword:
-            state.current_search_keyword = min(state.search_title_results, key=lambda x: state.search_title_results[x]["min_distance"])
 
-        state.selected_page_id = self._get_page_id(state.current_search_keyword, state)
-
+        state.selected_page_id = self._get_page_id(state)
         if not state.selected_page_id:
-            state.exhausted_search_keywords.append(state.current_search_keyword)
-            state.current_search_keyword = self._get_next_keyword(state)
-
-            if not state.current_search_keyword:
-                return {"error": "No more keywords to search. Generate a new query or proceed to provide the final answer.",
-                        "suggested_action": "final_action or parse_user_query"}
-
+            return {"error":"All event files have already been read or no suitable files found.",
+                    "suggested_action": "parse_user_query to identify new keywords"}
+            
         return state.selected_page_id
     
     def summarise(self, result: str) -> str:
@@ -333,24 +317,16 @@ class SelectEventFileTool(BaseModel):
         
         return f"Selected event file with page_id: {result}\nThe next logical step is to use the 'read_event_file_contents' tool to get the details of this file"
     
-    def _get_page_id(self, keyword: str, state: StateManager) -> str:
+    def _get_page_id(self, state: StateManager) -> str:
         """Get the page_id of the selected event file."""
         try:
-            page_id = min([res for res in state.search_title_results[keyword]["results"] if res.page_id not in state.read_event_page_ids],
+            page_id = min([res for res in state.search_title_results if res.page_id not in state.read_event_page_ids],
                         key=lambda x: x.distance).page_id
 
             return page_id
         # empty list -> attribute rror return none and use new keyword
         except AttributeError:
             return None
-        
-    def _get_next_keyword(self, state: StateManager) -> str:
-        state.exhausted_search_keywords.add(state.current_search_keyword)
-        keyword = min((key for key in state.search_title_results if key not in state.exhausted_search_keywords), 
-                                  key=lambda x: state.search_title_results[x]["min_distance"])
-
-        return keyword
-
 
 class ReadEventFileTool(BaseModel):
     """Use this tool to read the full contents of a specific event file AFTER it has been chosen by 'select_best_event_file'."""
@@ -814,8 +790,6 @@ class MyAgent:
                 # print(self.state.model_dump_json(indent=2))
                 # print(self.state.user_intent)
                 pprint(self.state.search_title_results)
-                print(self.state.current_search_keyword)
-                print(self.state.exhausted_search_keywords)
                 print(self.state.selected_page_id)
                 print(self.state.read_event_page_ids)
 
