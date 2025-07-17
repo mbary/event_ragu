@@ -103,10 +103,14 @@ class UserIntent(BaseModel):
 
     keywords: List[UserIntentKeyWord] = Field(description="Keywords that identify the type of event or activity being sought.",
                                               max_length=5, 
-                                              min_length=1)
+                                              min_length=2)
 
 class ParseUserQueryTool(BaseModel):
-    """Parse user query extracting user requirements."""
+    """
+    Parses the user's initial text query to extract structured intent (keywords, location, dates).
+    Use this ONLY as the FIRST step for a new user request.
+    Do NOT use this tool if you have already parsed the query and are in the process of evaluating search results.
+    """
     think: str = Field(description="Why is this extraction needed and what information is sought")
     action_type: Literal["parse_user_query"] = "parse_user_query"
 
@@ -163,7 +167,7 @@ class ParseUserQueryTool(BaseModel):
             ],
             temperature=0.0)
         state.user_intent = intent
-
+        # pprint(intent.model_dump())
         return intent
     
     def summarise(self, result: UserIntent) -> str:
@@ -173,12 +177,12 @@ class ParseUserQueryTool(BaseModel):
                     "suggested_action": "Try parsing the user query again with 'parse_user_query'"}
         
         summary = f"Think: {result.think}\n"
-        summary += f"Extracted user intent:\n"
+        summary += f"Parsed user query:\n"
         summary += f"Timeframe: {result.timeframe.start_date.isoformat()}-{result.timeframe.end_date.isoformat() if result.timeframe.end_date else 'N/A'}\n"
         summary += f"City: {result.city}\n"
         summary += f"Location: {result.location}\n"
         summary += f"Refined User Query: {result.query_refined}\n"
-        summary += "Now that the user's requirements are understood, the next step is to use 'search_event_pages' to find relevant events based on the extracted keywords."
+        summary += "The user's requirements have been successfully extracted. Your required next action is `search_event_pages` to find a list of potential events."
 
         return summary
 
@@ -194,8 +198,11 @@ class EventTitleResult(BaseModel):
     distance: float = Field(description="Distance score of the similarity embedding search")
 
 class SearchEventPageTitlesTool(BaseModel):
-    """Search for top 10 relevant event pages using title embedding similarity. Use this to get an initial list of potential events. 
-       DO NOT use this if you have already selected a specific file and need to read its contents."""
+    """
+    Searches the database for event pages based on the parsed user intent.
+    This should be used immediately after 'parse_user_query' to get an initial list of events.
+    Do NOT use this tool if a list of search results already exists. If results are present, your job is to process them using 'select_best_event_file'.
+    """
     think: str = Field(description="Why is this search needed and what information is sought")
     action_type: Literal["search_event_pages"] = "search_event_pages"
 
@@ -230,11 +237,11 @@ class SearchEventPageTitlesTool(BaseModel):
     def summarise(self, results: List[EventTitleResult]) -> str:
         """summarise the search results."""
 
-        if "error" in results:
+        if isinstance(results, dict) and "error" in results:
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
-        summary = f'Searched for event pages most relevant to the user query'
-        summary += "A list of potential events has been found. The next step is to use 'select_best_event_file' to pick the single most promising event to investigate further."
+        summary = f"Searched for event pages and found {len(results)} potential results."
+        summary += " You must now begin processing this list. Your required next action is `select_best_event_file` to pick the most promising event."
                     
         return summary
     
@@ -285,7 +292,11 @@ class EventDetails(BaseModel):
 ##########################################
 
 class SelectEventFileTool(BaseModel):
-    """Select the event file with the smallest distance measure."""
+    """
+    Selects the single best, unread event file from the existing search results list.
+    Use this to begin processing a search list OR to get the next event after a previous one was not a match.
+    This is the primary tool for iterating through the search results.
+    """
     think: str = Field(description="I should select the event file based on the smallest distance measure.")
     action_type: Literal["select_best_event_file"] = "select_best_event_file"
 
@@ -306,6 +317,9 @@ class SelectEventFileTool(BaseModel):
         if "error" in result:
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
+        if not result:
+            return f"Error: {result['error']}\nThere are no more events to check from the search list. You must now provide a final answer based on what you have found so far.\nThe required next action is `final_answer`."
+        
         return f"Selected event file with page_id: {result}\nThe next logical step is to use the 'read_event_file_contents' tool to get the details of this file"
     
     def _get_page_id(self, state: StateManager) -> str:
@@ -320,8 +334,10 @@ class SelectEventFileTool(BaseModel):
             return None
 
 class ReadEventFileTool(BaseModel):
-    """Use this tool to read the full contents of a specific event file AFTER it has been chosen by 'select_best_event_file'."""
-
+    """
+    Reads and parses the full contents of a SINGLE event file previously chosen by 'select_best_event_file'.
+    Its direct and only follow-up action is `evaluate_event_details_against_user_query`. Do not use any other tool after this one.
+    """
     action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
     think: str = Field(description="Why reading this specific event file")
     
@@ -434,7 +450,7 @@ class ReadEventFileTool(BaseModel):
         
         summary_str = " ".join(parts)
 
-        summary_str += f"\nThe details for event '{summary['title']}' have been read.\nNow, these details must be compared against the user's original request using the 'evaluate_event_details_against_user_query' tool."
+        summary_str += f"\nThe details for event '{summary['title']}' have been read and parsed. Your required next action is `evaluate_event_details_against_user_query` to check if it's a match."
         return summary_str
 
 class EventMatches(BaseModel):
@@ -472,11 +488,10 @@ class EventEvaluation(BaseModel):
     recommendation: str = Field(description="What to do next - try another event or provide this one")
 
 class EvaluateEventTool(BaseModel):
-    """Use this AFTER reading an event's contents with 'read_event_file_contents' to determine if it's a good match for the user.
-    Compares the most recently read event (from the state) against the user's initial requirements (also from the state).
-
-    Returns:
-        EventEvaluation: The evaluation result containing match confidence, reasoning, and recommendations.
+    """
+    Compares the most recently read event against the user's intent to determine if it's a good match.
+    This tool is the core decision-making step. It MUST be used after 'read_event_file_contents'.
+    The result of this tool dictates whether to 'final_answer' (on a match) or 'select_best_event_file' (on a mismatch).
     """
     action_type: Literal["evaluate_event_details_against_user_query"] = "evaluate_event_details_against_user_query"
     think: str = Field(description="What aspects need careful evaluation")
@@ -553,12 +568,12 @@ class EvaluateEventTool(BaseModel):
         
         if result.matches.matches:
             summary = f"Event '{getattr(result, 'title', 'N/A')}' matches! ({result.match_confidence:.0%} confident) - {result.overall_reasoning}"
-            summary += " The next step is to use 'final_answer' to present this result to the user."
+            summary += "\nYou have found a suitable event for the user. Your required next action is `final_answer`."
             return summary
         
         else:
             summary = f"Event '{getattr(result, 'title', 'N/A')}' doesn't match - {result.overall_reasoning}."
-            summary += "\nThe next step is to use 'select_best_event_file' to pick the next best event from the search results and repeat the process."
+            summary += "\nYou must now try the next event from your search results. Your required next action is `select_best_event_file`. Do not search again."
             return summary
         
 ########################
@@ -566,9 +581,10 @@ class EvaluateEventTool(BaseModel):
 ########################
 class FinalAction(BaseModel):
     """
-    Provide the final, comprehensive, human-readable answer to the user based on all gathered information.
-    This tool  synthesizes the results to construct the best possible response.
-    If no perfect match is found, it will suggest the best available alternative.
+    This is the final tool that concludes the task. Use this to provide the answer to the user.
+    This tool should ONLY be used in two cases:
+    1. An event has been evaluated and confirmed as a match.
+    2. You have exhausted all other options (e.g., search returned no results, or all results were evaluated as not a match) and you need to inform the user.
     """
     action_type: Literal["final_answer"] = "final_answer"
     think: str = Field(description="Summarize the findings and the reasoning for the final answer.")
@@ -637,8 +653,8 @@ class FinalAction(BaseModel):
             return date_str
 
     def summarise(self, result: str) -> str:
-        """The result is the final answer, so we just summarize that an answer was provided."""
-        return "A final answer has been generated and provided to the user."
+        """The result is the final answer. This summary signals the end of the task."""
+        return "A final answer has been generated and provided to the user. The task is now complete."    
 
 
 AgentActions = Union[ParseUserQueryTool,SearchEventPageTitlesTool, SelectEventFileTool,
@@ -743,7 +759,7 @@ class MyAgent:
             print(message)
 
 
-    def step(self, user_query: str, max_steps: int = 30) -> str:
+    def step(self, user_query: str, max_steps: int = 15) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
         Necessary to answer the user's query.
@@ -780,9 +796,9 @@ class MyAgent:
                 self._log(action_summary)
                 # print(self.state.model_dump_json(indent=2))
                 # print(self.state.user_intent)
-                pprint(self.state.search_title_results)
-                print(self.state.selected_page_id)
-                print(self.state.read_event_page_ids)
+                # pprint(self.state.search_title_results)
+                # print(self.state.selected_page_id)
+                # print(self.state.read_event_page_ids)
 
                 self.conversation_history.append({
                     "role": "assistant",
