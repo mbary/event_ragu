@@ -182,7 +182,7 @@ class ParseUserQueryTool(BaseModel):
         summary += f"City: {result.city}\n"
         summary += f"Location: {result.location}\n"
         summary += f"Refined User Query: {result.query_refined}\n"
-        summary += "The user's requirements have been successfully extracted. Your required next action is `search_event_pages` to find a list of potential events."
+        summary += "The user's requirements have been successfully extracted. Your required next action is 'search_event_pages' to find a list of potential events."
 
         return summary
 
@@ -241,7 +241,7 @@ class SearchEventPageTitlesTool(BaseModel):
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
         summary = f"Searched for event pages and found {len(results)} potential results."
-        summary += " You must now begin processing this list. Your required next action is `select_best_event_file` to pick the most promising event."
+        summary += " You must now begin processing this list. Your required next action is 'select_best_event_file' to pick the most promising event."
                     
         return summary
     
@@ -318,7 +318,7 @@ class SelectEventFileTool(BaseModel):
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
         if not result:
-            return f"Error: {result['error']}\nThere are no more events to check from the search list. You must now provide a final answer based on what you have found so far.\nThe required next action is `final_answer`."
+            return f"Error: {result['error']}\nThere are no more events to check from the search list. You must now provide a final answer based on what you have found so far.\nThe required next action is 'final_answer'."
         
         return f"Selected event file with page_id: {result}\nThe next logical step is to use the 'read_event_file_contents' tool to get the details of this file"
     
@@ -336,7 +336,7 @@ class SelectEventFileTool(BaseModel):
 class ReadEventFileTool(BaseModel):
     """
     Reads and parses the full contents of a SINGLE event file previously chosen by 'select_best_event_file'.
-    Its direct and only follow-up action is `evaluate_event_details_against_user_query`. Do not use any other tool after this one.
+    Its direct and only follow-up action is 'evaluate_event_details_against_user_query'. Do not use any other tool after this one.
     """
     action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
     think: str = Field(description="Why reading this specific event file")
@@ -450,7 +450,7 @@ class ReadEventFileTool(BaseModel):
         
         summary_str = " ".join(parts)
 
-        summary_str += f"\nThe details for event '{summary['title']}' have been read and parsed. Your required next action is `evaluate_event_details_against_user_query` to check if it's a match."
+        summary_str += f"\nThe details for event '{summary['title']}' have been read and parsed. Your required next action is 'evaluate_event_details_against_user_query' to check if it's a match."
         return summary_str
 
 class EventMatches(BaseModel):
@@ -473,13 +473,19 @@ class EventEvaluation(BaseModel):
                                     0.0-0.1 = No match (completely different)""")
     
     theme_evaluation: str = Field(description="Evaluation of the event's core subject matter or theme.")
-    theme_matches: bool
+    theme_proximity: Literal["perfect", "closely_related", "broadly_related", "unrelated"] = Field(
+        description="How close the event's theme is to the user's request."
+    )
     
     date_evaluation: str = Field(description="Evaluation of date match")
-    date_matches: bool
+    date_proximity: Literal["perfect", "within_a_week", "within_a_month", "outside_timespan"] = Field(
+        description="How close the event's date is to the user's timeframe."
+    )
     
     location_evaluation: str = Field(description="Evaluation of location match")
-    location_matches: bool
+    location_proximity: Literal["perfect", "adjacent_district", "different_district", "different_city"] = Field(
+        description="How close the event's location is to the user's request."
+    )
     
     type_evaluation: str = Field(description="Evaluation of event type/keywords match")
     type_matches: bool
@@ -509,6 +515,7 @@ class EvaluateEventTool(BaseModel):
                                 - Query: {state.user_intent.query_refined}
                                 - Looking for: {', '.join([k.keyword for k in state.user_intent.keywords])}
                                 - City: {state.user_intent.city}
+                                - Desired Location/District: {state.user_intent.location or 'Any'}
                                 - Start Date: {state.user_intent.timeframe.start_date.isoformat()}
                                 - End Date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
                                 
@@ -519,18 +526,36 @@ class EvaluateEventTool(BaseModel):
                                 - Recurring Dates (if any): {', '.join(state.event_details['parsed'].get('recurring_dates', [])) if state.event_details['parsed'].get('recurring_dates') else 'N/A'}
                                 - Location: {state.event_details['parsed']['location']}
                                 - City: {state.event_details['parsed']['city']}
+                                - District: {state.event_details['parsed'].get('district', 'N/A')}
                                 - Description: {state.event_details['parsed']['description']}                        
 
-                                Consider:
-                                1. Theme/Subject Matter: First evaluate the core subject. Is the event about the user's topic of interest?
-                                   For example, if the user wants a **"pottery making workshop"**:
-                                    - An event called **"Ceramics Glazing Class"** is a strong **THEME match**, as it's about the same craft.
-                                    - An event called **"Beginner's Weaving Workshop"** is a **THEME mismatch**, despite being the same event type.
-                                2. Geographic knowledge (e.g., districts within cities)
-                                3. Date flexibility (e.g., "next few weeks" from user's specified date)
-                                4. Event type synonyms and related concepts
-                                5. User's likely intent even if not explicitly stated
-                                6. Overall Match: An event can be a good overall match even if the type is different, as long as the theme is correct.
+                                **INSTRUCTIONS**
+
+                                Based on the information above, you must fill out the following evaluation fields. Be strict but fair in your judgment.
+
+                                1.  **Theme Proximity**: Classify how well the event's core subject matter matches the user's keywords.
+                                    - 'perfect': An exact match (e.g., user wants "pottery workshop", event is "pottery workshop").
+                                    - 'closely_related': A very similar activity (e.g., user wants "pottery", event is "ceramics glazing class").
+                                    - 'broadly_related': Same general category but different specifics (e.g., user wants "rock concert", event is "music festival").
+                                    - 'unrelated': Different subjects (e.g., user wants "rock concert", event is "jazz concert").
+
+                                2.  **Date Proximity**: Classify how well the event's date fits the user's timeframe.
+                                    - 'perfect': The event date falls within the user's start and end dates.
+                                    - 'within_a_week': The event is within 7 days before the start or after the end of the user's timeframe.
+                                    - 'within_a_month': The event is within the same month but more than a week off.
+                                    - 'outside_timespan': The event is in a completely different month or year.
+
+                                3.  **Location Proximity**: Use your geographic knowledge to classify the location match.
+                                    - 'perfect': The event is in the exact city and district/location requested.
+                                    - 'adjacent_district': The event is in a neighboring district within the same city (e.g., Ursynów vs. Mokotów).
+                                    - 'different_district': The event is in the correct city but a non-adjacent, distant district.
+                                    - 'different_city': The event is in a different city.
+
+                                4.  **Overall Match ('matches.matches')**: This is a final boolean decision. An event can only be a 'perfect' overall match if its 'theme_proximity' is 'perfect' or 'closely_related' AND its 'date_proximity' and 'location_proximity' are also 'perfect'. Set 'matches.matches' to 'True' only if these strict conditions are met. Otherwise, it is 'False'.
+
+                                5.  **Confidence Score ('match_confidence')**: Provide a float from 0.0 to 1.0 representing your overall confidence, considering all factors. A perfect match should be 1.0. A closely related theme in an adjacent district might be 0.8. An unrelated theme should be close to 0.0.
+
+                                6.  **Reasoning ('overall_reasoning')**: Write a brief, one-sentence explanation for your decision, highlighting the key matching and mismatching points. For example: "This event is a perfect theme match and takes place in the right month, but it is in a different district."
 
                                 Be somewhat flexible but not overly permissive.
                                 Always provide answers in Polish language"""
@@ -567,13 +592,15 @@ class EvaluateEventTool(BaseModel):
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
         if result.matches.matches:
-            summary = f"Event '{getattr(result, 'title', 'N/A')}' matches! ({result.match_confidence:.0%} confident) - {result.overall_reasoning}"
-            summary += "\nYou have found a suitable event for the user. Your required next action is `final_answer`."
+            summary = (f"Event '{getattr(result, 'title', 'N/A')}' is a match! "
+                    f"({result.match_confidence:.0%} confident). I have saved this result. "
+                    f"I will now check for other potential matches from the search list.")
+            summary += ("\nYour required next action is 'select_best_event_file' to continue processing the list.")
             return summary
         
         else:
-            summary = f"Event '{getattr(result, 'title', 'N/A')}' doesn't match - {result.overall_reasoning}."
-            summary += "\nYou must now try the next event from your search results. Your required next action is `select_best_event_file`. Do not search again."
+            summary = f"Event '{getattr(result, 'title', 'N/A')}' doesn't match - {result.overall_reasoning}. I will try the next event."
+            summary += "\nYou must now try the next event from your search results. Your required next action is 'select_best_event_file'. Do not search again."
             return summary
         
 ########################
@@ -601,47 +628,105 @@ class FinalAction(BaseModel):
                 
             answer+="\nThere may be no events of this type listed, or you could try searching with different keywords."
             return answer
-    
-        sorting_key=lambda e: (e.get('theme_matches', False),
-                               e.get('location_matches', False),
-                               e.get('date_matches', False),                               
-                               e.get('type_matches', False),
-                               e.get('confidence', 0))
 
-        best_event_overall = sorted(state.evaluation_history, key=sorting_key, reverse=True)[0]
 
-        if best_event_overall["matches"].get('matches', False):
-            best_page_id = best_event_overall['page_id']
-            best_event_details = state.read_event_pages_content_dict[best_page_id]
-            answer="After reviewing the options, I found an event that's a great match for your request!\n\n\n"
-            answer+=f"\tTitle:  {best_event_details['title']}\n\n"
-            answer+=f"\tDate:  {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
-            answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
-            if best_event_details.get('price_info'):
-                answer+=f"\tPrice: {best_event_details['price_info']}\n\n"
-            answer+=f"\tLocation:  {best_event_details['location']}\n\n"
-            answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
-            answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
-            answer+=f"Why this is a good match:\n{best_event_overall['overall_reasoning']}"
+        matching_events = [e for e in state.evaluation_history if e.get("matches", {}).get("matches")]
 
+        if matching_events:            
+            matching_events.sort(key=lambda e: (-e['match_confidence'],
+                                                state.read_event_pages_content_dict[e['page_id']]['start_datetime']['date'])
+                                 )
+
+            answer = f"After reviewing the options, I found {len(matching_events)} event(s) that match your request!\n\n"
+            
+            for i, event_eval in enumerate(matching_events):
+                page_id = event_eval['page_id']
+                event_details = state.read_event_pages_content_dict[page_id]
+                answer += f"\t--- Event {i+1} ---\n"
+                answer += f"\tTitle:    {event_details['title']}\n"
+                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+                if event_details.get('price_info'):
+                    answer += f"\tPrice:         {event_details['price_info']}\n"
+                answer += f"\tLocation:      {event_details['location']}\n"
+                answer += f"\tSummary: {event_details['summary']}\n"
+                answer += f"\tMore details: {event_details['source_url']}\n\n"
+                answer +="\n"
+            
             return answer
+
+
+        non_perfect_evals = [e for e in state.evaluation_history if not e.get("matches", {}).get("matches")]
+
+        close_alternatives = [
+            e for e in non_perfect_evals
+            if e.get('theme_proximity') in ['perfect', 'closely_related'] and
+            (e.get('date_proximity') in ['perfect', 'within_a_week', 'within_a_month'] or e.get('location_proximity') in ['perfect', 'adjacent_district'])]
+
+        if close_alternatives:
+            close_alternatives.sort(key=lambda e: -e['match_confidence'])
+            answer = "I couldn't find a perfect match. However, I found these very close alternatives:\n\n"
+
+            close_alternatives = close_alternatives[:3]
+            for i, event_eval in enumerate(close_alternatives):
+                page_id = event_eval['page_id']
+                event_details = state.read_event_pages_content_dict[page_id]
+                answer += f"\t--- Event {i+1} ---\n"
+                answer += f"\tTitle:    {event_details['title']}\n"
+                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+                if event_details.get('price_info'):
+                    answer += f"\tPrice:         {event_details['price_info']}\n"
+                answer += f"\tLocation:      {event_details['location']}\n"
+                answer += f"\tSummary: {event_details['summary']}\n"
+                answer += f"\tMore details: {event_details['source_url']}\n\n"
+                answer +="\n"
+                answer += f"\tReasoning: {event_eval['overall_reasoning']}\n\n"
+            return answer
+                                                   
+        theme_only_alternatives = [e for e in non_perfect_evals
+                                    if e.get('theme_proximity') in ['perfect', 'closely_related']]
         
-        else:
-            best_page_id = best_event_overall['page_id']
-            best_event_details = state.read_event_pages_content_dict[best_page_id]
-            answer="I couldn't find a perfect match for your request. However, after reviewing all the options, here is the closest alternative I found:\n\n\n"
-            answer+=f"\tTitle: {best_event_details['title']}\n\n"
-            answer+=f"\tStart Date: {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
-            answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
-            if best_event_details.get('price_info'):
-                answer+=f"\tPrice: {best_event_details['price_info']}\n\n"
-            answer+=f"\tLocation: {best_event_details['location']}\n\n"
-            answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
-            answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
-            answer+=f"Please note why this isn't a perfect match:\n{best_event_overall['overall_reasoning']}\n"
-            answer+="This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
+        if theme_only_alternatives:
+            theme_only_alternatives.sort(key=lambda e: -e['match_confidence'])
+            answer = "While I couldn't find a close match, these events have the right theme but differ in other aspects like date or location:\n\n"
 
+            theme_only_alternatives = theme_only_alternatives[:3]
+            for i, event_eval in enumerate(theme_only_alternatives):
+                page_id = event_eval['page_id']
+                event_details = state.read_event_pages_content_dict[page_id]
+                answer += f"\t--- Event {i+1} ---\n"
+                answer += f"\tTitle:    {event_details['title']}\n"
+                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+                if event_details.get('price_info'):
+                    answer += f"\tPrice:         {event_details['price_info']}\n"
+                answer += f"\tLocation:      {event_details['location']}\n"
+                answer += f"\tSummary: {event_details['summary']}\n"
+                answer += f"\tMore details: {event_details['source_url']}\n\n"
+                answer +="\n"
+                answer += f"\tReasoning: {event_eval['overall_reasoning']}\n\n"
             return answer
+
+        if state.evaluation_history:
+            best_overall_event = sorted(state.evaluation_history, key=lambda e: e['match_confidence'], reverse=True)[0]
+            page_id = best_overall_event['page_id']
+            event_details = state.read_event_pages_content_dict[page_id]
+            answer = "I couldn't find any close matches for your request. After reviewing all options, the single closest event I found is:\n\n"
+            answer += f"\tTitle:    {event_details['title']}\n"
+            answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+            answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+            if event_details.get('price_info'):
+                answer += f"\tPrice:         {event_details['price_info']}\n"
+            answer += f"\tLocation:      {event_details['location']}\n"
+            answer += f"\tSummary: {event_details['summary']}\n"
+            answer += f"\tMore details: {event_details['source_url']}\n\n"
+            answer +="\n"
+            answer += f"\tReasoning: {event_eval['overall_reasoning']}\n\n"
+            return answer
+
+        return "I am sorry, but I was unable to find any relevant events after a thorough search."
+    
 
     def _format_date(self, date_str: str) -> str:
         """Format date nicely for display."""
@@ -759,7 +844,7 @@ class MyAgent:
             print(message)
 
 
-    def step(self, user_query: str, max_steps: int = 15) -> str:
+    def step(self, user_query: str, max_steps: int = 20) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
         Necessary to answer the user's query.
@@ -786,7 +871,7 @@ class MyAgent:
                     response_model=AgentActions,
                     messages= self.conversation_history,
                     max_retries=self.deps.max_retries,
-                    max_tokens=4096,
+                    max_tokens=2048,
                     temperature=0.1
                 )
                 results = action.execute(state=self.state, deps=self.deps)
