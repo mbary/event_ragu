@@ -353,27 +353,40 @@ class ReadEventFileTool(BaseModel):
             with open(file_path, 'r', encoding='utf-8') as f:
                 raw_content = f.read()
 
-            extraction_prompt = f"""Extract structured event information from this file.
+            extraction_prompt = f"""You are a world-class data extraction engine. Your primary goal is to parse unstructured text and populate a structured JSON object based on the following principles.
 
-                                    User Requirements:
-                                    - timeframe: {state.user_intent.timeframe.start_date.isoformat()} - {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
+                                    **CORE EXTRACTION PRINCIPLES:**
 
-                                    Event File Content:
+                                    1.  **Comprehensive Field Extraction**: You must extract information for ALL fields required by the target JSON schema. This includes event type, location, summary, pricing, and audience, in addition to all date/time information.
+
+                                    2.  **Intelligent Date & Time Parsing**:
+                                        - **Format-Agnostic**: Recognize any common date or time format (e.g., 'YYYY-MM-DD', 'DD.MM.YYYY', 'Month Day, Year') and convert it to the required ISO 8601 format.
+                                        - **Handle Messy Text**: The source text may be poorly formatted, with dates and times run together. Use your intelligence to identify all distinct event occurrences.
+                                        - **Define `start_datetime`**: This is the start time of the **first session** relevant to the user's query timeframe.
+                                        - **Define `end_datetime`**: This is the end time of the **VERY LAST session** in the entire list of dates. For single events, this is the event's own end time.
+                                        - **Define `recurring_dates`**: This is a complete list of the start times for **EVERY session** found in the text. If there is only one date, this list will contain that single date.
+
+                                    3.  **Detailed Content Extraction**:
+                                        - **Event Type**: Identify the `event_type` from the content (e.g., concert, exhibition, workshop, festival, sports).
+                                        - **Location**: Identify the specific `location` (venue name), `city`, and `district` if mentioned.
+                                        - **Summary**: Create a brief, 1-2 sentence `summary` of the event's purpose.
+                                        - **Pricing & Audience**: Extract any `price_info` (including "free" or "bezpłatne") and the intended `target_audience`.
+                                        - **Source URL**: Extract the source URL if it is present in the text.
+
+                                    4.  **General Rules**:
+                                        - **Use Your Knowledge**: Infer reasonable missing information where appropriate (e.g., if a park is mentioned, you can infer the city).
+                                        - **Language**: All text-based fields in your output (like summary, description, etc.) **MUST** be in the Polish language.
+
+                                    ---
+                                    **TASK DATA:**
+
+                                    **User Requirements:**
+                                    - Timeframe: {state.user_intent.timeframe.start_date.isoformat()} - {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
+
+                                    **Event File Content to Parse:**
                                     {raw_content}
 
-                                    Instructions:
-                                    - Identify the event type based on the content (concert, exhibition, theater, workshop, festival, etc.)
-                                    - Extract all date/time information
-                                    - Identify the specific venue/location and city
-                                    - Note the district/neighborhood if mentioned
-                                    - Create a brief 1-2 sentence summary
-                                    - Extract any pricing, audience, or registration information
-                                    - Use your knowledge to infer missing information when reasonable
-                                    - Always provide answers in Polish language
-
-                                    Date Extraction Rules:
-                                    1. If an event has recurring dates -> start_date = the date closest to user- defined timeframe.
-                                    2. If the event doesn't have recurring dates, but has a specific date mentioned -> start_date = that date.
+                                    Now, apply all of these principles to extract the information from the provided content into the required structured format.
                                     """
 
             parsed_event = deps.client.chat.completions.create(
@@ -640,12 +653,27 @@ class FinalAction(BaseModel):
             answer = f"After reviewing the options, I found {len(matching_events)} event(s) that match your request!\n\n"
             
             for i, event_eval in enumerate(matching_events):
+                user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
+
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
+                # pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
-                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
-                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+                
+                if event_details.get("recurring_dates"):
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"                
+                else:
+                    answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                    answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
                 if event_details.get('price_info'):
                     answer += f"\tPrice:         {event_details['price_info']}\n"
                 answer += f"\tLocation:      {event_details['location']}\n"
@@ -669,12 +697,25 @@ class FinalAction(BaseModel):
 
             close_alternatives = close_alternatives[:3]
             for i, event_eval in enumerate(close_alternatives):
+                user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
-                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
-                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+                if event_details.get("recurring_dates"):
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"
+                else:
+                    answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                    answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
                 if event_details.get('price_info'):
                     answer += f"\tPrice:         {event_details['price_info']}\n"
                 answer += f"\tLocation:      {event_details['location']}\n"
@@ -693,12 +734,25 @@ class FinalAction(BaseModel):
 
             theme_only_alternatives = theme_only_alternatives[:3]
             for i, event_eval in enumerate(theme_only_alternatives):
+                user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
-                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
-                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+                if event_details.get("recurring_dates"):
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"                
+                else:
+                    answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                    answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
                 if event_details.get('price_info'):
                     answer += f"\tPrice:         {event_details['price_info']}\n"
                 answer += f"\tLocation:      {event_details['location']}\n"
@@ -714,15 +768,29 @@ class FinalAction(BaseModel):
             event_details = state.read_event_pages_content_dict[page_id]
             answer = "I couldn't find any close matches for your request. After reviewing all options, the single closest event I found is:\n\n"
             answer += f"\tTitle:    {event_details['title']}\n"
-            answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
-            answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+            if event_details.get("recurring_dates"):
+                    user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                    user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
+                    
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"                
+            else:
+                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
             if event_details.get('price_info'):
                 answer += f"\tPrice:         {event_details['price_info']}\n"
             answer += f"\tLocation:      {event_details['location']}\n"
             answer += f"\tSummary: {event_details['summary']}\n"
             answer += f"\tMore details: {event_details['source_url']}\n\n"
             answer +="\n"
-            answer += f"\tReasoning: {event_eval['overall_reasoning']}\n\n"
+            answer += f"\tReasoning: {best_overall_event['overall_reasoning']}\n\n"
             return answer
 
         return "I am sorry, but I was unable to find any relevant events after a thorough search."
@@ -844,7 +912,7 @@ class MyAgent:
             print(message)
 
 
-    def step(self, user_query: str, max_steps: int = 20) -> str:
+    def step(self, user_query: str, max_steps: int = 15) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
         Necessary to answer the user's query.
