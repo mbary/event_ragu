@@ -1,56 +1,45 @@
 import os
 import chromadb
 from chromadb.utils import embedding_functions
-
 from dotenv import load_dotenv
+
 load_dotenv()
 
-EVENT_DIR = "data/events"
 CHROMA_DB_DIR = ".chroma_db"
+COLLECTION_NAME = "event_semantic_summaries"
+EMBEDDING_MODEL = "text-embedding-3-small"
 
-db_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
-
-openai_embedding = embedding_functions.OpenAIEmbeddingFunction(
-    api_key =os.getenv("OPENAI_API_KEY"),
-    model_name="text-embedding-3-small",
-)
-
-def init_collection():
-    """Initialize the ChromaDB collection for events."""
+def init_collection() -> chromadb.Collection:
+    """
+    Connects to the persistent ChromaDB client and returns the existing
+    collection of event summaries.
+    
+    This function does NOT create or modify the collection. It assumes
+    the database has already been built by `build_database.py`.
+    """
+    db_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
+    
+    openai_embedding_func = embedding_functions.OpenAIEmbeddingFunction(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model_name=EMBEDDING_MODEL,
+    )
     
     try:
-        collection = db_client.get_collection("event_titles", embedding_function=openai_embedding)
+        collection = db_client.get_collection(
+            name=COLLECTION_NAME, 
+            embedding_function=openai_embedding_func
+        )
+        print(f"Successfully connected to existing collection '{COLLECTION_NAME}' with {collection.count()} documents.")
         return collection
-    
-    except:
-        collection = db_client.create_collection("event_titles", embedding_function=openai_embedding,metadata={"hnsw:space": "cosine"})
+    except Exception as e:
+        print(f"FATAL ERROR: Could not connect to ChromaDB collection '{COLLECTION_NAME}'.")
+        print("Please ensure you have run the `build_database.py` script first.")
+        print(f"Original error: {e}")
+        raise
 
-        event_files = [f for f in os.listdir(EVENT_DIR) if f.endswith('.md')]
-
-        docs = []
-        ids = []
-        metadatas = []
-        for file in event_files:
-            title = ' '.join(file.split('.')[0].split('_')[:-1])
-            page_id = file.split('.')[0]
-
-            docs.append(title)
-            ids.append(page_id)
-            metadatas.append({"page_id": page_id, "title": title})
-
-        batch_size = 50
-        for i in range(0, len(docs), batch_size):
-            collection.add(
-                documents=docs[i:i + batch_size],
-                ids=ids[i:i + batch_size],
-                metadatas=metadatas[i:i + batch_size]
-            )
-
-        return collection
-    
 if __name__ == "__main__":
-    collection = init_collection()
-    print(f"Initialized collection with {collection.count()} documents.")
-    print("Collection metadata:", collection.get_metadata())
-    print("Collection info:", collection.get_info())
-    print("List of collections:", db_client.list_collections())
+    print("Attempting to initialize collection...")
+    try:
+        collection = init_collection()
+    except Exception as e:
+        print("\nVerification failed.")
