@@ -302,47 +302,139 @@ class EventDetails(BaseModel):
 ########### READ FILE CONTENTS ###########
 ##########################################
 
+class SelectionDecision(BaseModel):
+    """"Represents the decision whether to continue searching or stop"""
+    think: str = Field(description="The reasoning behind the decision to continue or stop")
+    decision: Literal["continue", "stop"] = Field(description="The final decision")
+    page_id: Optional[str] = Field(description="The page_id of the next file to process, if the decision is 'continue'",
+    default=None)
+
 class SelectEventFileTool(BaseModel):
     """
-    Selects the single best, unread event file from the existing search results list.
+    Analyzes the current search state and decides whether to continue processing files or to stop.
+    If continuing, it selects the single best, unread event file from the existing search results list.
     Use this to begin processing a search list OR to get the next event after a previous one was not a match.
-    This is the primary tool for iterating through the search results.
+    If stopping, it provides the reason.
+    This is the core decision-making tool for iterating through search results.lts.
     """
-    think: str = Field(description="I should select the event file based on the smallest distance measure.")
+    think: str = Field(description="My thought process on why I need to make a continue/stop decision now.")
     action_type: Literal["select_best_event_file"] = "select_best_event_file"
 
-    def execute(self, state: StateManager, deps: DependencyManager) -> str:
+    def execute(self, state: StateManager, deps: DependencyManager) -> SelectionDecision:
         if not state.search_title_results:
             return {"error": "No search results found. Please perform a search first using search_event_pages.",
                     "suggested_action": "search_event_pages"}
 
-        state.selected_page_id = self._get_page_id(state)
-        if not state.selected_page_id:
-            return {"error":"All event files have already been read or no suitable files found.",
-                    "suggested_action": "parse_user_query to identify new keywords"}
-            
-        return state.selected_page_id
+        unread_events = [res for res in state.search_event_title_results if res.page_id not in state.read_event_pages_ids]
+
+        if not unread_events:
+            return SelectionDecision(
+                think="There are no more files in the search results to process. The search is complete",
+                decision="stop")
+
+        decision_prompt = self._build_decision_prompt(state, unread_events)
+
+        decision = deps.client.chat.completions.create(
+            model=deps.main_model,
+            response_model=SelectionDecision,
+            messages=[
+                {"role":"system", "content":"You are a meticulous and strategic research assistant. Your goal is to find all highly relevant results, not just the first one. You stop only when the potential for finding better results diminishes significantly."},
+                {"role":"user", "content":decision_prompt}
+            ],
+            max_retries=deps.max_retries,
+            temperature=0.0)
+
+        if decision.decision=="continue" and not decision.page_id:
+            best_next_event = min(unread_events, key=lambda x: x.distance)
+            decision.page_id = best_next_event
+
+        if decision.page_id:
+            state.selected_page_id = decision.page_id
+
+        return decision        
     
-    def summarise(self, result: str) -> str:
-        """Create action summary"""
+    def summarise(self, result: SelectionDecision) -> str:
+        """Create action summary based on the decision"""
         if "error" in result:
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
-        
+
         if not result:
             return f"Error: {result['error']}\nThere are no more events to check from the search list. You must now provide a final answer based on what you have found so far.\nThe required next action is 'final_answer'."
         
-        return f"Selected event file with page_id: {result}\nThe next logical step is to use the 'read_event_file_contents' tool to get the details of this file"
-    
-    def _get_page_id(self, state: StateManager) -> str:
-        """Get the page_id of the selected event file."""
-        try:
-            page_id = min([res for res in state.search_title_results if res.page_id not in state.read_event_page_ids],
-                        key=lambda x: x.distance).page_id
+        if result.decision=="stop":
+            summary = f"Decision: Stop searching. Reason: {result.think}\n"
+            summary += "I have concluded that further searching will not be fruitful. Your required next action is 'final_answer'."
+            return summary
+        
+        elif result.decision=="continue" and result.page_id:
+            summary = f"Decision: Continue searching. Reason: {result.think}\n"
+            summary += f"Selected next event file with page_id: {result.page_id}\n"
+            summary += "The next required action is to use the 'read_event_file_contents' tool to get the details of this file."
+            return summary
 
-            return page_id
-        # empty list -> attribute rror return none and use new keyword
-        except AttributeError:
-            return None
+        return "An unexpected decision was made. Stopping search to be safe. Required next action is 'final_answer'."
+    
+
+    def _build_decision_prompt(self, state: StateManager, unread_events: List[EventTitleResult]) -> str:
+
+        history_summary = "No events have been evaluated yet."
+        min_distance_of_good_match = float('inf')
+
+        if state.evaluation_history:
+            sorted_evals = sorted(state.evaluation_history, key=lambda e: e.get('match_confidence', 0), reverse=True)
+            good_matches = [e for e in sorted_evals if e.get('match_confidence', 0) >= 0.7]
+
+            if good_matches:
+                best_match_page_id = good_matches[0]['page_id']
+                for res in state.search_title_results:
+                    if res.page_id == best_match_page_id:
+                        min_distance_of_good_match = res.distance
+                        break
+            
+            summary_lines = [f"So far, you have evaluated {len(sorted_evals)} event(s)."]
+            if good_matches:
+                summary_lines.append(f"\nFound {len(good_matches)} high-confidence matches (confidence >= 0.7).")
+                summary_lines.append(f"The best so far had a search distance of {min_distance_of_good_match:.2f}.")
+            
+            summary_lines.append("\nTop evaluated events:")
+            for e in sorted_evals[:5]:
+                summary_lines.append(f"- '{e['title']}' (Confidence: {e.get('match_confidence', 0):.2f}, Reason: {e['overall_reasoning']})")
+
+            preview_limit = 5
+            upcoming_summary = "Here are the next best search results to consider:\n"
+            for event in sorted(unread_events, key=lambda x: x.distance)[:preview_limit]:
+                upcoming_summary += f"- '{event.title}' (search distance: {event.distance:.2f})\n"
+            
+            
+            prompt = f"""
+            You must make a strategic decision: should you continue processing search results or stop now?
+            Your goal is to find ALL highly relevant events, not just the first one.
+
+            **CONTEXT:**
+            Your original query was: "{state.original_query}"
+
+            **SEARCH HISTORY**
+            {history_summary}
+
+            **UPCOMING RESULTS:**
+            {upcoming_summary}
+
+            **YOUR TASK: Apply the principle of diminishing returns by analyzing the search distances.**
+            Weigh the quality of events already found against the potential of upcoming events.
+            The "search distance" measures relevance (lower is better). Your primary task is to identify a "jump" in this distance, which signals that the remaining results are of lower quality.
+
+            - **You SHOULD CONTINUE if:**
+                - You haven't found any high-confidence (>=0.7) matches yet, and the upcoming results still have low search distances and relatively close to each other.
+                - You HAVE found good matches, but the next unread event has a search distance that is **similar to or better than** the best one you've already found (e.g., best found was 0.25, next is 0.28). This indicates it could be another excellent match.
+
+            - **You SHOULD STOP if:**
+                - You have found at least one high-confidence match, AND the search distances of the upcoming events are **significantly worse** than your best match's distance (e.g., best found was 0.25, next is 0.6). This indicates diminishing returns.
+                - The titles of the upcoming events are clearly and completely unrelated to the user's query, even if their distance is low.
+
+            Based on this analysis, decide whether to 'continue' or 'stop' and provide your reasoning. If you continue, specify the 'page_id' of the single best file to check next.
+            """
+
+            return prompt
 
 class ReadEventFileTool(BaseModel):
     """
