@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Union, List, Literal, Optional, Dict, Any, Set
 from pathlib import Path
 
@@ -152,7 +152,18 @@ class ParseUserQueryTool(BaseModel):
         Keyword Extraction Rules:
         1. Prioritise keywords relating to specific entities over general activities:
             - A band name should be prioritised over a general activity like "concert".
-
+        2. If a precise location is mentioned it should be treated as a keyword.
+            Example of GOOD location keyword:
+                - "Plaża Romantyczna"
+                - "Muzeum Narodowe"
+                - "Park Łazienkowski"
+            Examples of BAD location keywords:
+                - "Warszawa"
+                - "Polska"
+                - "Miasto"
+                - "Wieś"
+        3. Uwzględnij odmiany rzeczownika zidnetyfikowanych słów kluczowych.
+            - słowko klucz: kreatywnej 
         All responses **MUST** be in Polish language.
         """
         user_query = state.original_query
@@ -593,6 +604,7 @@ class EvaluateEventTool(BaseModel):
 
             evaluation.page_id = state.event_details["page_id"]
             evaluation.title = state.event_details['parsed']['title']
+            pprint(evaluation.model_dump())
             return evaluation
             
         except Exception as e:
@@ -659,12 +671,16 @@ class FinalAction(BaseModel):
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
                 # pprint(event_details)
+                print("="*30)
+                print(" ")
+                print("EVENT DETAILS - matching")
+                pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
                 
                 if event_details.get("recurring_dates"):
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
-                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
 
                     if relevant_dates:
                         answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
@@ -701,12 +717,17 @@ class FinalAction(BaseModel):
                 user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
+                print("="*30)
+                print(" ")
+                print("EVENT DETAILS close alternatives")
+                pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
 
                 if event_details.get("recurring_dates"):
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
-                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)
+                                    ]
 
                     if relevant_dates:
                         answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
@@ -743,7 +764,7 @@ class FinalAction(BaseModel):
 
                 if event_details.get("recurring_dates"):
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
-                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
 
                     if relevant_dates:
                         answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
@@ -774,7 +795,7 @@ class FinalAction(BaseModel):
                     user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                     
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
-                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end]
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
 
                     if relevant_dates:
                         answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
