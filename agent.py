@@ -105,6 +105,11 @@ class UserIntent(BaseModel):
                                               max_length=5, 
                                               min_length=2)
 
+    expanded_keywords: Optional[List[str]] = Field(description="A list of 2-3 highly relevant synonyms or related concepts to broaden the search.",
+                                                    default=None)                                                    
+
+    semantic_search_query: str = Field(description="A detailed, descriptive query synthesized from all extracted user intent components, optimized for vector search.")
+
 class ParseUserQueryTool(BaseModel):
     """
     Parses the user's initial text query to extract structured intent (keywords, location, dates).
@@ -120,8 +125,7 @@ class ParseUserQueryTool(BaseModel):
         SYSTEM_PROMPT_INTENT_EXTRACTION = f"""You are a world-class expert at extracting user intent from the user query in a form of unstructured text.
 
         The current_date is {date.today().isoformat()}.
-
-        Returns:
+        **Returns**:
         - think: A thought process or reasoning behind the user's intent extraction.
         - query: A refined user query.
         - action_type: The type of action to be performed, which is always "parse_user_query".
@@ -130,40 +134,63 @@ class ParseUserQueryTool(BaseModel):
         - location: The location where the user wants to find events, represented as a string.
         - keywords: A list of keywords, strictly related to the users query.
 
-        Date Extraction Rules:
-        1. No date/time mentioned -> start_date = current_date; end_date = current_date + 14 days.
-        2. Only month is mentioned:
-            - If current month matches -> start_date = current_date; end_date = last day of the month.
-            - If next month is mentioned -> start_date = first day of that month; end_date = last day of that month.
-        3. Specific date mentioned -> start_date = that date.
-        4. If a timeframe is mentioned (e.g., "next week", "in two weeks", "this weekend", "next weekend"):
-            - start_date = start date of that time frame; end_date = end date of that time frame.
-        5. If a date range is mentioned -> extract both start and end date.
-
-        Examples (assuming current_date is 2025-07-14):
-            - "zajęcia z badmintona" → start: 2025-07-14, end: None
-            - "zajęcia z badmintona w lipcu" → start: 2025-07-14, end: 2025-07-31
-            - "zajęcia z badmintona w sierpniu" → start: 2025-08-01, end: 2025-08-31
-            - "zajęcia z badmintona 20 lipca" → start: 2025-07-20, end: None
+        **Your task has two phases:**
+        1.  **Parse Phase:** Analyze the user's raw text to extract structured information (keywords, location, timeframe).
+        2.  **Synthesize Phase:** Use the structured information you just extracted to construct a new, ideal 'semantic_search_query'.
         
-        City Extraction Rules:
-        1. If no city is mentioned -> city = Warsaw.
+        ---
+        **PHASE 1: PARSING RULES:**
+        *    **Date Extraction Rules:**
+            * No date/time mentioned -> start_date = current_date; end_date = current_date + 14 days.
+            * Only month is mentioned:
+                - If current month matches -> start_date = current_date; end_date = last day of the month.
+                - If next month is mentioned -> start_date = first day of that month; end_date = last day of that month.
+            * Specific date mentioned -> start_date = that date.
+            * If a timeframe is mentioned (e.g., "next week", "in two weeks", "this weekend", "next weekend"):
+                - start_date = start date of that time frame; end_date = end date of that time frame.
+            * If a date range is mentioned -> extract both start and end date.
 
-        Keyword Extraction Rules:
-        1. Prioritise keywords relating to specific entities over general activities:
-            - A band name should be prioritised over a general activity like "concert".
-        2. If a precise location is mentioned it should be treated as a keyword.
-            Example of GOOD location keyword:
-                - "Plaża Romantyczna"
-                - "Muzeum Narodowe"
-                - "Park Łazienkowski"
-            Examples of BAD location keywords:
-                - "Warszawa"
-                - "Polska"
-                - "Miasto"
-                - "Wieś"
-        3. Uwzględnij odmiany rzeczownika zidnetyfikowanych słów kluczowych.
-            - słowko klucz: kreatywnej 
+            Examples (assuming current_date is 2025-07-14):
+                - "zajęcia z badmintona" → start: 2025-07-14, end: None
+                - "zajęcia z badmintona w lipcu" → start: 2025-07-14, end: 2025-07-31
+                - "zajęcia z badmintona w sierpniu" → start: 2025-08-01, end: 2025-08-31
+                - "zajęcia z badmintona 20 lipca" → start: 2025-07-20, end: None
+            
+        *    **City Extraction Rules:**
+            * If no city is mentioned -> city = Warsaw.
+
+        *    **Keyword Extraction Rules:**
+            *  **Refine the Query:** First, create a 'query_refined'. This should be a clear, self-contained natural language sentence that captures the user's full intent.
+            *  **Extract Core Keywords:** From the query, identify the main keywords. **Crucially, you MUST return these keywords in their base, nominative (Mianownik) Polish form.** For example, if the user says "warsztatów kreatywnych", the keyword should be "warsztaty kreatywne" or "kreatywność", not the inflected form.
+            *  **Expand with Synonyms ('expanded_keywords'):** Brainstorm 2-3 additional keywords that are synonymous or conceptually very close to the core keywords. This is for broadening the search. For "warsztaty rysunku" (drawing workshop), good expansions would be "zajęcia plastyczne" (art classes) or "kurs malarstwa" (painting course).
+            *  **Prioritise Specifics:** A specific entity (e.g., a band name like "Kult" or a venue like "Stadion Narodowy") is always a better keyword than a general term ("koncert", "stadion").
+
+        ---
+        **PHASE 2: SYNTHESIS RULES FOR 'semantic_search_query'**
+
+        Your goal is to create the most descriptive and unambiguous query possible. Combine the structured elements into a natural, flowing sentence.
+
+        *   **Structure:** Follow a pattern like: '[Adjectives/Keywords] [Event Type] dla [Audience] w lokalizacji [Specific Location], [City] w okresie [Descriptive Timeframe]'.
+        *   **Be Descriptive:**
+            *   Instead of just the keyword "pilates", use "darmowe zajęcia pilates".
+            *   Instead of just "lipiec", use a more descriptive phrase like "w miesiącu lipcu 2025" or "w weekend 5-6 lipca 2025".
+            *   Explicitly mention the city and district.
+        *   **The query should be a complete thought that fully captures the user's request.**
+
+        ---
+        **EXAMPLES:**
+
+        **Example 1:**
+        *   **User Input:** "darmowe pilates ursynów w lipcu 2025"
+        *   **Parsed Data:** keywords=["pilates", "darmowe"], location="Ursynów", timeframe="2025-07-01 to 2025-07-31"
+        *   **Ideal 'semantic_search_query':** "darmowe zajęcia pilates dla dorosłych w dzielnicy Ursynów w Warszawie w miesiącu lipcu 2025"
+
+        **Example 2:**
+        *   **User Input:** "koncerty dla dzieci w ten weekend"
+        *   **Parsed Data:** keywords=["koncerty", "dla dzieci"], timeframe="2025-07-19 to 2025-07-20" (assuming today is before that weekend)
+        *   **Ideal 'semantic_search_query':** "koncerty muzyczne dla dzieci i rodzin w Warszawie w weekend 19-20 lipca 2025"
+
+        ---
         All responses **MUST** be in Polish language.
         """
         user_query = state.original_query
@@ -192,6 +219,9 @@ class ParseUserQueryTool(BaseModel):
         summary += f"City: {result.city}\n"
         summary += f"Location: {result.location}\n"
         summary += f"Refined User Query: {result.query_refined}\n"
+        summary += f"Core Keywords: {', '.join([k.keyword for k in result.keywords])}\n"
+        if result.expanded_keywords:
+            summary += f"Expanded Keywords: {', '.join(result.expanded_keywords)}\n"
         summary += "The user's requirements have been successfully extracted. Your required next action is 'search_event_pages' to find a list of potential events."
 
         return summary
@@ -224,24 +254,29 @@ class SearchEventPageTitlesTool(BaseModel):
         elif not state.user_intent.keywords:
             return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
                     "suggested_action": "parse_user_query"}
-        keywords = [k.keyword.lower() for k in state.user_intent.keywords]
-        results = []
 
-        for keyword in keywords:
-            kw_results = deps.collection.query(
-                query_texts=[keyword],
-                n_results=10)
+        results_dict={}
 
-            for i in range(len(kw_results['ids'][0])):
-                results.append(EventTitleResult(
-                    page_id=kw_results['ids'][0][i],
-                    title=kw_results['metadatas'][0][i]['title'],
-                    distance=kw_results['distances'][0][i]
-                ))
+        query_results = deps.collection.query(
+            query_texts=[state.user_intent.semantic_search_query],
+            n_results=20)
 
-        state.search_title_results=results
+        for i in range(len(query_results['ids'][0])):
+            page_id = query_results['ids'][0][i]
 
-        return results
+            if page_id not in results_dict:
+                results_dict[page_id] = EventTitleResult(
+                    page_id=page_id,
+                    title=query_results['metadatas'][0][i]['title'],
+                    distance=query_results['distances'][0][i]
+                )
+
+        final_results=list(results_dict.values())
+        final_results.sort(key=lambda x: x.distance)
+
+        state.search_title_results = final_results
+
+        return final_results
     
     def summarise(self, results: List[EventTitleResult]) -> str:
         """summarise the search results."""
@@ -249,7 +284,7 @@ class SearchEventPageTitlesTool(BaseModel):
         if isinstance(results, dict) and "error" in results:
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
-        summary = f"Searched for event pages and found {len(results)} potential results."
+        summary = f"Searched using a refined query and expanded keywords, finding {len(results)} unique potential results."
         summary += " You must now begin processing this list. Your required next action is 'select_best_event_file' to pick the most promising event."
                     
         return summary
@@ -346,7 +381,7 @@ class SelectEventFileTool(BaseModel):
             best_next_event = min(unread_events, key=lambda x: x.distance).page_id
             decision.page_id = best_next_event
             state.selected_page_id = best_next_event
-            
+
         return decision        
     
     def summarise(self, result: SelectionDecision) -> str:
@@ -395,6 +430,8 @@ class SelectEventFileTool(BaseModel):
             summary_lines.append("\nTop evaluated events:")
             for e in sorted_evals[:5]:
                 summary_lines.append(f"- '{e['title']}' (Confidence: {e.get('match_confidence', 0):.2f}, Reason: {e['overall_reasoning']})")
+
+            history_summary = "\n".join(summary_lines)
 
         preview_limit = 5
         upcoming_summary = "Here are the next best search results to consider:\n"
@@ -760,10 +797,7 @@ class FinalAction(BaseModel):
 
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-                print("="*30)
-                print(" ")
-                print("EVENT DETAILS - matching")
-                pprint(event_details)
+
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
                 
@@ -806,10 +840,7 @@ class FinalAction(BaseModel):
                 user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-                print("="*30)
-                print(" ")
-                print("EVENT DETAILS close alternatives")
-                pprint(event_details)
+
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
 
@@ -1022,7 +1053,7 @@ class MyAgent:
             print(message)
 
 
-    def step(self, user_query: str, max_steps: int = 15) -> str:
+    def step(self, user_query: str, max_steps: int = 20) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
         Necessary to answer the user's query.
@@ -1057,10 +1088,18 @@ class MyAgent:
                 summary = action.summarise(results)
                 action_summary = f"Action: {action.action_type}\n\nThink: {action.think}\n\nResult: {summary}\n"
                 self._log(action_summary)
+                # print(" ")
+                # print("="*50)
+                # print("STATE")
                 # print(self.state.model_dump_json(indent=2))
+                # print(" ")
+                # print("USER INTENT")
                 # print(self.state.user_intent)
+                # print(" ")
                 # pprint(self.state.search_title_results)
                 # print(self.state.selected_page_id)
+                # print(" ")
+                # print(" READ PAGES")
                 # print(self.state.read_event_page_ids)
 
                 self.conversation_history.append({
