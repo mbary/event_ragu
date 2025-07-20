@@ -178,7 +178,6 @@ class ParseUserQueryTool(BaseModel):
             ],
             temperature=0.0)
         state.user_intent = intent
-        # pprint(intent.model_dump())
         return intent
     
     def summarise(self, result: UserIntent) -> str:
@@ -229,7 +228,6 @@ class SearchEventPageTitlesTool(BaseModel):
         results = []
 
         for keyword in keywords:
-            # kw_dict = {}
             kw_results = deps.collection.query(
                 query_texts=[keyword],
                 n_results=10)
@@ -325,7 +323,7 @@ class SelectEventFileTool(BaseModel):
             return {"error": "No search results found. Please perform a search first using search_event_pages.",
                     "suggested_action": "search_event_pages"}
 
-        unread_events = [res for res in state.search_event_title_results if res.page_id not in state.read_event_pages_ids]
+        unread_events = [res for res in state.search_title_results if res.page_id not in state.read_event_page_ids]
 
         if not unread_events:
             return SelectionDecision(
@@ -344,13 +342,11 @@ class SelectEventFileTool(BaseModel):
             max_retries=deps.max_retries,
             temperature=0.0)
 
-        if decision.decision=="continue" and not decision.page_id:
-            best_next_event = min(unread_events, key=lambda x: x.distance)
+        if decision.decision=="continue":
+            best_next_event = min(unread_events, key=lambda x: x.distance).page_id
             decision.page_id = best_next_event
-
-        if decision.page_id:
-            state.selected_page_id = decision.page_id
-
+            state.selected_page_id = best_next_event
+            
         return decision        
     
     def summarise(self, result: SelectionDecision) -> str:
@@ -400,41 +396,39 @@ class SelectEventFileTool(BaseModel):
             for e in sorted_evals[:5]:
                 summary_lines.append(f"- '{e['title']}' (Confidence: {e.get('match_confidence', 0):.2f}, Reason: {e['overall_reasoning']})")
 
-            preview_limit = 5
-            upcoming_summary = "Here are the next best search results to consider:\n"
-            for event in sorted(unread_events, key=lambda x: x.distance)[:preview_limit]:
-                upcoming_summary += f"- '{event.title}' (search distance: {event.distance:.2f})\n"
-            
-            
-            prompt = f"""
-            You must make a strategic decision: should you continue processing search results or stop now?
-            Your goal is to find ALL highly relevant events, not just the first one.
+        preview_limit = 5
+        upcoming_summary = "Here are the next best search results to consider:\n"
+        for event in sorted(unread_events, key=lambda x: x.distance)[:preview_limit]:
+            upcoming_summary += f"- '{event.title}' (search distance: {event.distance:.2f})\n"
+        
+        prompt = f"""
+        You must make a strategic decision: should you continue processing search results or stop now?
+        Your goal is to find ALL highly relevant events, not just the first one.
 
-            **CONTEXT:**
-            Your original query was: "{state.original_query}"
+        **CONTEXT:**
+        Your original query was: "{state.original_query}"
 
-            **SEARCH HISTORY**
-            {history_summary}
+        **SEARCH HISTORY**
+        {history_summary}
 
-            **UPCOMING RESULTS:**
-            {upcoming_summary}
+        **UPCOMING RESULTS:**
+        {upcoming_summary}
 
-            **YOUR TASK: Apply the principle of diminishing returns by analyzing the search distances.**
-            Weigh the quality of events already found against the potential of upcoming events.
-            The "search distance" measures relevance (lower is better). Your primary task is to identify a "jump" in this distance, which signals that the remaining results are of lower quality.
+        **YOUR TASK: Apply the principle of diminishing returns by analyzing the search distances.**
+        Weigh the quality of events already found against the potential of upcoming events.
+        The "search distance" measures relevance (lower is better). Your primary task is to identify a "jump" in this distance, which signals that the remaining results are of lower quality.
 
-            - **You SHOULD CONTINUE if:**
-                - You haven't found any high-confidence (>=0.7) matches yet, and the upcoming results still have low search distances and relatively close to each other.
-                - You HAVE found good matches, but the next unread event has a search distance that is **similar to or better than** the best one you've already found (e.g., best found was 0.25, next is 0.28). This indicates it could be another excellent match.
+        - **You SHOULD CONTINUE if:**
+            - You haven't found any high-confidence (>=0.7) matches yet, and the upcoming results still have low search distances and relatively close to each other.
+            - You HAVE found good matches, but the next unread event has a search distance that is **similar to or better than** the best one you've already found (e.g., best found was 0.25, next is 0.28). This indicates it could be another excellent match.
 
-            - **You SHOULD STOP if:**
-                - You have found at least one high-confidence match, AND the search distances of the upcoming events are **significantly worse** than your best match's distance (e.g., best found was 0.25, next is 0.6). This indicates diminishing returns.
-                - The titles of the upcoming events are clearly and completely unrelated to the user's query, even if their distance is low.
+        - **You SHOULD STOP if:**
+            - You have found at least one high-confidence match, AND the search distances of the upcoming events are **significantly worse** than your best match's distance (e.g., best found was 0.25, next is 0.6). This indicates diminishing returns.
+            - The titles of the upcoming events are clearly and completely unrelated to the user's query, even if their distance is low.
 
-            Based on this analysis, decide whether to 'continue' or 'stop' and provide your reasoning. If you continue, specify the 'page_id' of the single best file to check next.
-            """
-
-            return prompt
+        Based on this analysis, decide whether to 'continue' or 'stop' and provide your reasoning.
+        """
+        return prompt
 
 class ReadEventFileTool(BaseModel):
     """
@@ -465,15 +459,15 @@ class ReadEventFileTool(BaseModel):
                                     2.  **Intelligent Date & Time Parsing**:
                                         - **Format-Agnostic**: Recognize any common date or time format (e.g., 'YYYY-MM-DD', 'DD.MM.YYYY', 'Month Day, Year') and convert it to the required ISO 8601 format.
                                         - **Handle Messy Text**: The source text may be poorly formatted, with dates and times run together. Use your intelligence to identify all distinct event occurrences.
-                                        - **Define `start_datetime`**: This is the start time of the **first session** relevant to the user's query timeframe.
-                                        - **Define `end_datetime`**: This is the end time of the **VERY LAST session** in the entire list of dates. For single events, this is the event's own end time.
-                                        - **Define `recurring_dates`**: This is a complete list of the start times for **EVERY session** found in the text. If there is only one date, this list will contain that single date.
+                                        - **Define 'start_datetime'**: This is the start time of the **first session** relevant to the user's query timeframe.
+                                        - **Define 'end_datetime'**: This is the end time of the **VERY LAST session** in the entire list of dates. For single events, this is the event's own end time.
+                                        - **Define 'recurring_dates'**: This is a complete list of the start times for **EVERY session** found in the text. If there is only one date, this list will contain that single date.
 
                                     3.  **Detailed Content Extraction**:
-                                        - **Event Type**: Identify the `event_type` from the content (e.g., concert, exhibition, workshop, festival, sports).
-                                        - **Location**: Identify the specific `location` (venue name), `city`, and `district` if mentioned.
-                                        - **Summary**: Create a brief, 1-2 sentence `summary` of the event's purpose.
-                                        - **Pricing & Audience**: Extract any `price_info` (including "free" or "bezpłatne") and the intended `target_audience`.
+                                        - **Event Type**: Identify the 'event_type' from the content (e.g., concert, exhibition, workshop, festival, sports).
+                                        - **Location**: Identify the specific 'location' (venue name), 'city', and 'district' if mentioned.
+                                        - **Summary**: Create a brief, 1-2 sentence 'summary' of the event's purpose.
+                                        - **Pricing & Audience**: Extract any 'price_info' (including "free" or "bezpłatne") and the intended 'target_audience'.
                                         - **Source URL**: Extract the source URL if it is present in the text.
 
                                     4.  **General Rules**:
@@ -667,7 +661,12 @@ class EvaluateEventTool(BaseModel):
                                     - 'different_district': The event is in the correct city but a non-adjacent, distant district.
                                     - 'different_city': The event is in a different city.
 
-                                4.  **Overall Match ('matches.matches')**: This is a final boolean decision. An event can only be a 'perfect' overall match if its 'theme_proximity' is 'perfect' or 'closely_related' AND its 'date_proximity' and 'location_proximity' are also 'perfect'. Set 'matches.matches' to 'True' only if these strict conditions are met. Otherwise, it is 'False'.
+                                4.  **Overall Match ('matches.matches')**: This is a final boolean decision. To make it, follow this simple checklist. You will set 'matches.matches' to 'True' if **ALL** of the following conditions are met. Otherwise, set it to 'False'.
+                                    - 'theme_proximity' MUST be 'perfect' OR 'closely_related'.
+                                    - 'date_proximity' MUST be 'perfect' OR 'within_a_week'.
+                                    - 'location_proximity' MUST be 'perfect' OR 'adjacent_district'.
+
+                                    Think step-by-step in the 'matches.think' field, explicitly checking each of the three conditions above before concluding with 'True' or 'False'.
 
                                 5.  **Confidence Score ('match_confidence')**: Provide a float from 0.0 to 1.0 representing your overall confidence, considering all factors. A perfect match should be 1.0. A closely related theme in an adjacent district might be 0.8. An unrelated theme should be close to 0.0.
 
@@ -696,7 +695,6 @@ class EvaluateEventTool(BaseModel):
 
             evaluation.page_id = state.event_details["page_id"]
             evaluation.title = state.event_details['parsed']['title']
-            pprint(evaluation.model_dump())
             return evaluation
             
         except Exception as e:
@@ -762,7 +760,6 @@ class FinalAction(BaseModel):
 
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-                # pprint(event_details)
                 print("="*30)
                 print(" ")
                 print("EVENT DETAILS - matching")
