@@ -141,10 +141,9 @@ class ParseUserQueryTool(BaseModel):
         ---
         **PHASE 1: PARSING RULES:**
         *    **Date Extraction Rules:**
-            * No date/time mentioned -> start_date = current_date; end_date = current_date + 14 days.
+            * No date/time mentioned -> start_date = current_date; end_date = current_date + 2 months.
             * Only month is mentioned:
-                - If current month matches -> start_date = current_date; end_date = last day of the month.
-                - If next month is mentioned -> start_date = first day of that month; end_date = last day of that month.
+                - start_date = first day of that month; end_date = last day of that month.
             * Specific date mentioned -> start_date = that date.
             * If a timeframe is mentioned (e.g., "next week", "in two weeks", "this weekend", "next weekend"):
                 - start_date = start date of that time frame; end_date = end date of that time frame.
@@ -417,15 +416,22 @@ class SelectEventFileTool(BaseModel):
 
             if good_matches:
                 best_match_page_id = good_matches[0]['page_id']
+                last_match_page_id = good_matches[-1]['page_id']
                 for res in state.search_title_results:
                     if res.page_id == best_match_page_id:
                         min_distance_of_good_match = res.distance
+                        break
+
+                for res in state.search_title_results:
+                    if res.page_id == last_match_page_id:
+                        min_distance_of_last_match = res.distance
                         break
             
             summary_lines = [f"So far, you have evaluated {len(sorted_evals)} event(s)."]
             if good_matches:
                 summary_lines.append(f"\nFound {len(good_matches)} high-confidence matches (confidence >= 0.7).")
                 summary_lines.append(f"The best so far had a search distance of {min_distance_of_good_match:.2f}.")
+                summary_lines.append(f"The last match had a search distance of {min_distance_of_last_match:.2f}")
             
             summary_lines.append("\nTop evaluated events:")
             for e in sorted_evals[:5]:
@@ -457,7 +463,7 @@ class SelectEventFileTool(BaseModel):
 
         - **You SHOULD CONTINUE if:**
             - You haven't found any high-confidence (>=0.7) matches yet, and the upcoming results still have low search distances and relatively close to each other.
-            - You HAVE found good matches, but the next unread event has a search distance that is **similar to or better than** the best one you've already found (e.g., best found was 0.25, next is 0.28). This indicates it could be another excellent match.
+            - You HAVE found good matches, but the next unread event has a search distance that is **similar to or better than** the best match or the last match you've already found (e.g., best or the last found was 0.25, next is 0.28). This indicates it could be another excellent match. An increase of up to 0.05 between matches is acceptable.
 
         - **You SHOULD STOP if:**
             - You have found at least one high-confidence match, AND the search distances of the upcoming events are **significantly worse** than your best match's distance (e.g., best found was 0.25, next is 0.6). This indicates diminishing returns.
@@ -498,7 +504,7 @@ class ReadEventFileTool(BaseModel):
                                         - **Handle Messy Text**: The source text may be poorly formatted, with dates and times run together. Use your intelligence to identify all distinct event occurrences.
                                         - **Define 'start_datetime'**: This is the start time of the **first session** relevant to the user's query timeframe.
                                         - **Define 'end_datetime'**: This is the end time of the **VERY LAST session** in the entire list of dates. For single events, this is the event's own end time.
-                                        - **Define 'recurring_dates'**: This is a complete list of the start times for **EVERY session** found in the text. If there is only one date, this list will contain that single date.
+                                        - **Define 'recurring_dates'**: This is a complete list of the start times for **EVERY session** found in the text. If there are no recurring instances of the event, this list must be empty.
 
                                     3.  **Detailed Content Extraction**:
                                         - **Event Type**: Identify the 'event_type' from the content (e.g., concert, exhibition, workshop, festival, sports).
@@ -531,8 +537,7 @@ class ReadEventFileTool(BaseModel):
                     {"role": "user", "content": extraction_prompt}
                 ],
                 max_retries=deps.max_retries,
-                temperature=0.0
-            )
+                temperature=0.0)
             event_dict = parsed_event.model_dump()
             event_dict["start_datetime"]["date"] = event_dict["start_datetime"]["date"].isoformat()
             event_dict["end_datetime"]["date"] = event_dict["end_datetime"]["date"].isoformat()
@@ -686,7 +691,7 @@ class EvaluateEventTool(BaseModel):
                                     - 'broadly_related': Same general category but different specifics (e.g., user wants "rock concert", event is "music festival").
                                     - 'unrelated': Different subjects (e.g., user wants "rock concert", event is "jazz concert").
 
-                                2.  **Date Proximity**: Classify how well the event's date fits the user's timeframe.
+                                2.  **Date Proximity**: Classify how well the event's date (including recurring dates) fits the user's timeframe.
                                     - 'perfect': The event date falls within the user's start and end dates.
                                     - 'within_a_week': The event is within 7 days before the start or after the end of the user's timeframe.
                                     - 'within_a_month': The event is within the same month but more than a week off.
@@ -797,11 +802,13 @@ class FinalAction(BaseModel):
 
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-
+                print("="*50)
+                print("EVENT DETAILS MATCH")
+                pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
                 
-                if event_details.get("recurring_dates"):
+                if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
                                     if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
 
@@ -840,11 +847,13 @@ class FinalAction(BaseModel):
                 user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-
+                print("="*50)
+                print("EVENT DETAILS CLOSE ALTERNATIES")
+                pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
 
-                if event_details.get("recurring_dates"):
+                if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
                                     if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)
                                     ]
@@ -881,8 +890,10 @@ class FinalAction(BaseModel):
                 event_details = state.read_event_pages_content_dict[page_id]
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
-
-                if event_details.get("recurring_dates"):
+                print("="*50)
+                print("EVENT DETAILS THEME ALTS")
+                pprint(event_details)
+                if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
                                     if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
 
@@ -907,10 +918,13 @@ class FinalAction(BaseModel):
             best_overall_event = sorted(state.evaluation_history, key=lambda e: e['match_confidence'], reverse=True)[0]
             page_id = best_overall_event['page_id']
             event_details = state.read_event_pages_content_dict[page_id]
+            print("="*50)
+            print("EVENT DETAILS COULDN'T FIND")
+            pprint(event_details)
             answer = "I couldn't find any close matches for your request. After reviewing all options, the single closest event I found is:\n\n"
             answer += f"\tTitle:    {event_details['title']}\n"
 
-            if event_details.get("recurring_dates"):
+            if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
                     user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
                     user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                     
@@ -1080,9 +1094,12 @@ class MyAgent:
                     response_model=AgentActions,
                     messages= self.conversation_history,
                     max_retries=self.deps.max_retries,
-                    max_tokens=2048,
-                    temperature=0.1
-                )
+                    temperature=0.1)
+
+                if isinstance(action, FinalAction):
+                    answer = action.execute(state=self.state, deps=self.deps)
+                    return answer
+                    
                 results = action.execute(state=self.state, deps=self.deps)
 
                 summary = action.summarise(results)
@@ -1115,9 +1132,6 @@ class MyAgent:
                     "summary": summary
                 })
 
-                if isinstance(action, FinalAction):
-                    answer = action.execute(state=self.state, deps=self.deps)
-                    return answer
                 
             except Exception as e:                
                 self._log(f"Error during action generation: {e}")
@@ -1140,9 +1154,7 @@ class MyAgent:
                 model=self.deps.main_model,
                 response_model=FinalAction,
                 messages=self.conversation_history,
-                max_retries=self.deps.max_retries,
-                max_tokens=4096
-            )
+                max_retries=self.deps.max_retries)
             answer = final_action.execute(state=self.state, deps=self.deps)
             self._log(f"\nFinal Thought: {final_action.think}")
             return answer
