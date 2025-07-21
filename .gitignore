@@ -1,5 +1,4 @@
 .env
 .venv/
 # *.md
-.chroma_db/**
 *.pyc
