@@ -22,7 +22,10 @@ class SemanticExtraction(BaseModel):
     """Distilled, semantically rich summary of an event for embedding."""
     title: str = Field(description="The official, clean title of the event.")
     summary: str = Field(description="A concise, 1-3 sentence summary of what the event is about, its theme and purpose. This Should NOT include logistics like dates, times or prices.")
-
+    time_summary: str = Field(description="A clean, human-readable summary of the event's timeframe.",
+                              examples=['odbywa się w lipcu 2025', 'w każdy weekend czerwca', 'trwa od maja do sierpnia 2025'])
+    location_summary: str = Field(description="A clean summary of the location.",
+                                  examples=['Ursynów, Warszawa', 'Park Kultury w Powsinie', 'Park Skaryszewski'])
 
 client = instructor.from_openai(AsyncOpenAI())
 semaphore = asyncio.Semaphore(5)
@@ -36,10 +39,12 @@ async def distill_event_content(filepath: str) -> SemanticExtraction:
         system_prompt = """You are a highly efficient data distiller. Your sole purpose is to read raw text and extract its core semantic essence into a structured format. 
 
         **CRITICAL INSTRUCTIONS:**
-        1.  Extract the official, clean **title** of the event.
-        2.  Create a concise, 1-3 sentence **summary** that describes WHAT the event is about, its theme, and its purpose.
+        1.  **Title:** Extract the official, clean **title** of the event.
+        2.  **Summary:** Create a concise, 1-3 sentence **summary** that describes WHAT the event is about, its theme, and its purpose.
+        3. **Time Summary:** Create a separate, brief, human-readable summary of the event's timeframe. If there are many dates, generalize them (e.g., "odbywa się w każdy piątek lipca i sierpnia 2025"). If it's a single day, state that day.
         3.  **YOU MUST IGNORE ALL LOGISTICAL INFORMATION.** Do not include dates, times, URLs, contact info, registration details, prices, or boilerplate text in the summary. Focus ONLY on the thematic description.
-        4. The summary **MUST** be in Polish language.
+        4.  **Location Summary:** Create a separate, clean summary of the event's location, including the district and city.
+        5. The summary **MUST** be in Polish language.
         """
         
         user_prompt = f"""
@@ -103,7 +108,12 @@ def create_embedding_collection(summaries_dict: dict[str, SemanticExtraction]):
     ids = []
     metadatas = []
     for page_id, summary in summaries_dict.items():
-        document_for_embedding = f"Tytuł: {summary.title}\n\nOpis: {summary.summary}"
+        document_for_embedding = (
+            f"Tytuł: {summary.title}\n"
+            f"Opis: {summary.summary}\n"
+            f"Kiedy: {summary.time_summary}\n"
+            f"Gdzie: {summary.location_summary}"
+        )
         docs_to_embed.append(document_for_embedding)
         ids.append(page_id)
         metadatas.append({"page_id": page_id, "title": summary.title})
