@@ -1056,9 +1056,6 @@ class FinalAction(BaseModel):
 
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-                print("="*50)
-                print("EVENT DETAILS MATCH")
-                pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
                 
@@ -1101,9 +1098,6 @@ class FinalAction(BaseModel):
                 user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
                 page_id = event_eval['page_id']
                 event_details = state.read_event_pages_content_dict[page_id]
-                print("="*50)
-                print("EVENT DETAILS CLOSE ALTERNATIES")
-                pprint(event_details)
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
 
@@ -1144,9 +1138,6 @@ class FinalAction(BaseModel):
                 event_details = state.read_event_pages_content_dict[page_id]
                 answer += f"\t--- Event {i+1} ---\n"
                 answer += f"\tTitle:    {event_details['title']}\n"
-                print("="*50)
-                print("EVENT DETAILS THEME ALTS")
-                pprint(event_details)
                 if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
                     relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
                                     if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
@@ -1172,9 +1163,6 @@ class FinalAction(BaseModel):
             best_overall_event = sorted(state.evaluation_history, key=lambda e: e['match_confidence'], reverse=True)[0]
             page_id = best_overall_event['page_id']
             event_details = state.read_event_pages_content_dict[page_id]
-            print("="*50)
-            print("EVENT DETAILS COULDN'T FIND")
-            pprint(event_details)
             answer = "I couldn't find any close matches for your request. After reviewing all options, the single closest event I found is:\n\n"
             answer += f"\tTitle:    {event_details['title']}\n"
 
@@ -1226,24 +1214,6 @@ AgentActions = Union[ParseUserQueryTool,
                     #  EvaluateEventTool, 
                      ReadAndEvaluateEventTool,
                      FinalAction]
-
-
-### Rebuild the damn models
-# StateManager.model_rebuild()
-# DependencyManager.model_rebuild()
-# UserIntentDateTime.model_rebuild()
-# UserIntentKeyWord.model_rebuild()
-# UserIntent.model_rebuild()
-# ParseUserQueryTool.model_rebuild()
-# EventTitleResult.model_rebuild()
-# SearchEventPageTitlesTool.model_rebuild()
-# EventDetailsStart.model_rebuild()
-# EventDetailsEnd.model_rebuild()
-# EventDetails.model_rebuild()
-# SelectEventFileTool.model_rebuild()
-# ReadEventFileTool.model_rebuild()
-# EventEvaluation.model_rebuild()
-# EvaluateEventTool.model_rebuild()
 
 
 ####################################################################
