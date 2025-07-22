@@ -10,11 +10,12 @@ import instructor
 from anthropic import Anthropic
 from pydantic import BaseModel, Field
 from openai import OpenAI
-
+import logfire
 from dotenv import load_dotenv
-load_dotenv()
 from pprint import pprint
 from setup_db import init_collection
+load_dotenv()
+
 
 
 EVENT_DIR = Path("data/events")
@@ -118,7 +119,8 @@ class ParseUserQueryTool(BaseModel):
     """
     think: str = Field(description="Why is this extraction needed and what information is sought")
     action_type: Literal["parse_user_query"] = "parse_user_query"
-
+    
+    @logfire.instrument('parse_user_query', extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> UserIntent:
         """Extract user intent from the user query."""
 
@@ -245,6 +247,7 @@ class SearchEventPageTitlesTool(BaseModel):
     think: str = Field(description="Why is this search needed and what information is sought")
     action_type: Literal["search_event_pages"] = "search_event_pages"
 
+    @logfire.instrument("search_event_pages", extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> List[EventTitleResult]:
 
         if not state.user_intent:
@@ -352,6 +355,7 @@ class SelectEventFileTool(BaseModel):
     think: str = Field(description="My thought process on why I need to make a continue/stop decision now.")
     action_type: Literal["select_best_event_file"] = "select_best_event_file"
 
+    @logfire.instrument("select_best_event", extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> SelectionDecision:
         if not state.search_title_results:
             return {"error": "No search results found. Please perform a search first using search_event_pages.",
@@ -365,7 +369,7 @@ class SelectEventFileTool(BaseModel):
                 decision="stop")
 
         decision_prompt = self._build_decision_prompt(state, unread_events)
-
+        logfire.info(f"Decision Prompt: {decision_prompt}")
         decision = deps.client.chat.completions.create(
             model=deps.main_model,
             response_model=SelectionDecision,
@@ -481,6 +485,7 @@ class ReadEventFileTool(BaseModel):
     action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
     think: str = Field(description="Why reading this specific event file")
     
+    @logfire.instrument("read_file_contents", extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
         if not state.selected_page_id:
             return {"error": "No page_id selected. Please select a file first using select_best_event_file.",
@@ -654,6 +659,7 @@ class EvaluateEventTool(BaseModel):
     action_type: Literal["evaluate_event_details_against_user_query"] = "evaluate_event_details_against_user_query"
     think: str = Field(description="What aspects need careful evaluation")
     
+    @logfire.instrument("evaluate_event_details", extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> EventEvaluation:
         if not state.event_details:
             return {"error": "No event details found. Please read an event file first.", 
@@ -773,6 +779,7 @@ class FinalAction(BaseModel):
     action_type: Literal["final_answer"] = "final_answer"
     think: str = Field(description="Summarize the findings and the reasoning for the final answer.")
 
+    @logfire.instrument("final_action", extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
         """Generate a comprehensive, human-readable answer from the collected state."""
         
@@ -970,21 +977,21 @@ AgentActions = Union[ParseUserQueryTool,SearchEventPageTitlesTool, SelectEventFi
 
 
 ### Rebuild the damn models
-StateManager.model_rebuild()
-DependencyManager.model_rebuild()
-UserIntentDateTime.model_rebuild()
-UserIntentKeyWord.model_rebuild()
-UserIntent.model_rebuild()
-ParseUserQueryTool.model_rebuild()
-EventTitleResult.model_rebuild()
-SearchEventPageTitlesTool.model_rebuild()
-EventDetailsStart.model_rebuild()
-EventDetailsEnd.model_rebuild()
-EventDetails.model_rebuild()
-SelectEventFileTool.model_rebuild()
-ReadEventFileTool.model_rebuild()
-EventEvaluation.model_rebuild()
-EvaluateEventTool.model_rebuild()
+# StateManager.model_rebuild()
+# DependencyManager.model_rebuild()
+# UserIntentDateTime.model_rebuild()
+# UserIntentKeyWord.model_rebuild()
+# UserIntent.model_rebuild()
+# ParseUserQueryTool.model_rebuild()
+# EventTitleResult.model_rebuild()
+# SearchEventPageTitlesTool.model_rebuild()
+# EventDetailsStart.model_rebuild()
+# EventDetailsEnd.model_rebuild()
+# EventDetails.model_rebuild()
+# SelectEventFileTool.model_rebuild()
+# ReadEventFileTool.model_rebuild()
+# EventEvaluation.model_rebuild()
+# EvaluateEventTool.model_rebuild()
 
 
 ####################################################################
@@ -1066,7 +1073,7 @@ class MyAgent:
         if self.verbose:
             print(message)
 
-
+    @logfire.instrument("Agent Run", record_return=True)
     def step(self, user_query: str, max_steps: int = 20) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
@@ -1098,31 +1105,22 @@ class MyAgent:
 
                 if isinstance(action, FinalAction):
                     answer = action.execute(state=self.state, deps=self.deps)
+                    logfire.info(f"Final Answer: {answer}")
                     return answer
                     
                 results = action.execute(state=self.state, deps=self.deps)
 
                 summary = action.summarise(results)
                 action_summary = f"Action: {action.action_type}\n\nThink: {action.think}\n\nResult: {summary}\n"
+                logfire.info(f"Action summary at step: {step_num+1}: {action_summary}")
+                logfire.info(f"State at step: {step_num+1}: {self.state.model_dump()}")
                 self._log(action_summary)
-                # print(" ")
-                # print("="*50)
-                # print("STATE")
-                # print(self.state.model_dump_json(indent=2))
-                # print(" ")
-                # print("USER INTENT")
-                # print(self.state.user_intent)
-                # print(" ")
-                # pprint(self.state.search_title_results)
-                # print(self.state.selected_page_id)
-                # print(" ")
-                # print(" READ PAGES")
-                # print(self.state.read_event_page_ids)
 
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": action_summary
                 })
+                logfire.info(f"Conversation history at step {step_num+1}: {self.conversation_history}")
 
                 self.action_history.append({
                     "step": step_num + 1,
@@ -1135,6 +1133,7 @@ class MyAgent:
                 
             except Exception as e:                
                 self._log(f"Error during action generation: {e}")
+                logfire.debug(f"Error during action generation: {e}")
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": f"Error occured: {str(e)}."
@@ -1143,6 +1142,8 @@ class MyAgent:
                     "role": "user",
                     "content": f"Error: {str(e)}. Try a different appraoch"
                 })
+                logfire.info(f"Conversation history after error at step {step_num+1}: {self.conversation_history}")
+                
         self._log("\nReached maximum steps.\nRequesting final answer...\n")            
         self.conversation_history.append({
             "role": "user",
@@ -1156,6 +1157,7 @@ class MyAgent:
                 messages=self.conversation_history,
                 max_retries=self.deps.max_retries)
             answer = final_action.execute(state=self.state, deps=self.deps)
+            logfire.info(f"Final Answer: {answer}")
             self._log(f"\nFinal Thought: {final_action.think}")
             return answer
         
@@ -1175,13 +1177,16 @@ class MyAgent:
         return "\n".join(summary_parts)
     
 if __name__ == "__main__":
-    
-    while True:
+    user_query =''
+    while True and user_query.lower() != 'exit':
         user_query = input("Enter your query (or 'exit' to quit): ")
         try:
-            if user_query.lower() == 'exit':
-                break
             
+            logfire.configure(token=os.environ.get("LOGFIRE_TOKEN"), console=False)
+            logfire.instrument_openai()
+            # logfire.instrument_pydantic(
+            #     # record='metrics'
+            #     )
             agent = MyAgent(main_model="gpt-4.1-mini", verbose=True)
             final_answer = agent.step(user_query)
             print(f"\nFinal Answer: {final_answer}")
