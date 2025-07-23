@@ -554,142 +554,139 @@ class ReadAndEvaluateEventTool(BaseModel):
                     "suggested_action": "Try select_best_event_file to move to next file"}
     
     def _get_system_prompt(self) -> str:
-        """System prompt emphasizing careful two-phase processing"""
         return """You are an expert at extracting and evaluating event information. 
 
-CRITICAL INSTRUCTIONS:
-1. You MUST complete TWO DISTINCT PHASES of analysis
-2. Phase 1 (Extraction) must be COMPLETELY finished before starting Phase 2 (Evaluation)
-3. Give equal attention and care to BOTH phases
-4. Do NOT rush through extraction to get to evaluation
-5. All text outputs MUST be in Polish language
+                CRITICAL INSTRUCTIONS:
+                1. You MUST complete TWO DISTINCT PHASES of analysis
+                2. Phase 1 (Extraction) must be COMPLETELY finished before starting Phase 2 (Evaluation)
+                3. Give equal attention and care to BOTH phases
+                4. Do NOT rush through extraction to get to evaluation
+                5. All text outputs MUST be in Polish language
 
-You are processing events in Warsaw, Poland, so use your knowledge of Polish geography, especially Warsaw districts."""
+                You are processing events in Warsaw, Poland, so use your knowledge of Polish geography, especially Warsaw districts."""
 
     def _build_prompt(self, state: StateManager, raw_content: str) -> str:
-        """Build prompt preserving ALL rules from both original tools"""
         return f"""
-TWO-PHASE PROCESSING - READ ALL INSTRUCTIONS
+                TWO-PHASE PROCESSING - READ ALL INSTRUCTIONS
 
-You will process this event file in TWO MANDATORY PHASES:
-- PHASE 1: Extract all information from the raw content
-- PHASE 2: Evaluate the extracted information against user requirements
+                You will process this event file in TWO MANDATORY PHASES:
+                - PHASE 1: Extract all information from the raw content
+                - PHASE 2: Evaluate the extracted information against user requirements
 
-**CRITICAL INSTRUCTIONS: Complete ALL of Phase 1 before starting Phase 2**
+                **CRITICAL INSTRUCTIONS: Complete ALL of Phase 1 before starting Phase 2**
 
---------------------------------------------------------------------
-PHASE 1: DATA EXTRACTION
+                --------------------------------------------------------------------
+                PHASE 1: DATA EXTRACTION
 
-You are a world-class data extraction engine. Parse the unstructured text below and populate the EventDetails structure.
+                You are a world-class data extraction engine. Parse the unstructured text below and populate the EventDetails structure.
 
-**EXTRACTION PRINCIPLES:**
+                **EXTRACTION PRINCIPLES:**
 
-1. **Comprehensive Field Extraction**: 
-   - Extract ALL fields: title, event_type, dates, location, pricing, audience, description, summary, source_url
-   - If information is missing, use your knowledge to make reasonable inferences
+                1. **Comprehensive Field Extraction**: 
+                - Extract ALL fields: title, event_type, dates, location, pricing, audience, description, summary, source_url
+                - If information is missing, use your knowledge to make reasonable inferences
 
-2. **Intelligent Date & Time Parsing**:
-   - Convert ANY date format to ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)
-   - Handle messy text with dates run together
-   - **start_datetime**: The FIRST session/occurrence of the event, closest to the user-defined start_date
-   - **end_datetime**: The VERY LAST session/occurrence in the entire list
-   - **recurring_dates**: A complete list of ALL individual session dates found
-   - For single events: start and end are the same event's times, recurring_dates is None
+                2. **Intelligent Date & Time Parsing**:
+                - Convert ANY date format to ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)
+                - Handle messy text with dates run together
+                - **start_datetime**: The FIRST session/occurrence of the event, closest to the user-defined start_date
+                - **end_datetime**: The VERY LAST session/occurrence in the entire list
+                - **recurring_dates**: A complete list of ALL individual session dates found
+                - For single events: start and end are the same event's times, recurring_dates is None
 
-3. **Detailed Content Extraction**:
-   - **event_type**: concert, exhibition, workshop, festival, sports, etc.
-   - **location**: Specific venue name
-   - **city**: Always extract (likely Warszawa)
-   - **district**: Warsaw district if mentioned (e.g., Mokotów, Ursynów)
-   - **summary**: Create a 1-2 sentence Polish summary
-   - **price_info**: Including "free"/"bezpłatne"
-   - **target_audience**: Who is this for
-   - **source_url**: If present in the text
+                3. **Detailed Content Extraction**:
+                - **event_type**: concert, exhibition, workshop, festival, sports, etc.
+                - **location**: Specific venue name
+                - **city**: Always extract (likely Warszawa)
+                - **district**: Warsaw district if mentioned (e.g., Mokotów, Ursynów)
+                - **summary**: Create a 1-2 sentence Polish summary
+                - **price_info**: Including "free"/"bezpłatne"
+                - **target_audience**: Who is this for
+                - **source_url**: If present in the text
 
-4. **Language Requirement**:
-   - ALL text fields (title, description, summary) MUST be in Polish
+                4. **Language Requirement**:
+                - ALL text fields (title, description, summary) MUST be in Polish
 
-**User's Timeframe Context:**
-start_date: {state.user_intent.timeframe.start_date.isoformat()}
-end_date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'No end date specified'}
+                **User's Timeframe Context:**
+                start_date: {state.user_intent.timeframe.start_date.isoformat()}
+                end_date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'No end date specified'}
 
-**RAW EVENT CONTENT TO EXTRACT FROM:**
-```
-{raw_content}
-```
+                **RAW EVENT CONTENT TO EXTRACT FROM:**
+                ```
+                {raw_content}
+                ```
 
-**PHASE 1 COMPLETION CHECKLIST** (populate phase_one_checklist):
-Before moving to Phase 2, verify:
-- "all_fields_extracted": Did you extract all available information?
-- "dates_comprehensive": Did you find ALL dates mentioned (including recurring)?
-- "polish_language": Are all text fields in Polish?
-- "location_complete": Did you extract venue, city, and district (if available)?
+                **PHASE 1 COMPLETION CHECKLIST** (populate phase_one_checklist):
+                Before moving to Phase 2, verify:
+                - "all_fields_extracted": Did you extract all available information?
+                - "dates_comprehensive": Did you find ALL dates mentioned (including recurring)?
+                - "polish_language": Are all text fields in Polish?
+                - "location_complete": Did you extract venue, city, and district (if available)?
 
---------------------------------------------------------------------
-STOP. Review your extraction. Have you found ALL recurring dates?
---------------------------------------------------------------------
-PHASE 2: EVALUATION AGAINST USER REQUIREMENTS
+                --------------------------------------------------------------------
+                STOP. Review your extraction. Have you found ALL recurring dates?
+                --------------------------------------------------------------------
+                PHASE 2: EVALUATION AGAINST USER REQUIREMENTS
 
-Now evaluate the event you just extracted against these requirements:
+                Now evaluate the event you just extracted against these requirements:
 
-**USER IS LOOKING FOR:**
-- Query: {state.user_intent.query_refined}
-- City: {state.user_intent.city}
-- Location/District: {state.user_intent.location or 'Any district'}
-- start_date: {state.user_intent.timeframe.start_date.isoformat()} 
-- end_date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
+                **USER IS LOOKING FOR:**
+                - Query: {state.user_intent.query_refined}
+                - City: {state.user_intent.city}
+                - Location/District: {state.user_intent.location or 'Any district'}
+                - start_date: {state.user_intent.timeframe.start_date.isoformat()} 
+                - end_date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
 
-**EVALUATION CRITERIA:**
+                **EVALUATION CRITERIA:**
 
-1. **Theme Proximity** (theme_proximity):
-   - "perfect": Exact match (user wants "pottery workshop" → event is "pottery workshop")
-   - "closely_related": Very similar (user wants "pottery" → event is "ceramics class")
-   - "broadly_related": Same category (user wants "rock concert" → event is "music festival")
-   - "unrelated": Different (user wants "rock concert" → event is "jazz")
+                1. **Theme Proximity** (theme_proximity):
+                - "perfect": Exact match (user wants "pottery workshop" → event is "pottery workshop")
+                - "closely_related": Very similar (user wants "pottery" → event is "ceramics class")
+                - "broadly_related": Same category (user wants "rock concert" → event is "music festival")
+                - "unrelated": Different (user wants "rock concert" → event is "jazz")
 
-2. **Date Proximity** (date_proximity):
-   - "perfect": Event date(s) fall within user's timeframe
-   - "within_a_week": Within 7 days before/after user's timeframe
-   - "within_a_month": Same month but >7 days off
-   - "outside_timespan": Different month/year entirely
+                2. **Date Proximity** (date_proximity):
+                - "perfect": Event date(s) fall within user's timeframe
+                - "within_a_week": Within 7 days before/after user's timeframe
+                - "within_a_month": Same month but >7 days off
+                - "outside_timespan": Different month/year entirely
 
-3. **Location Proximity** (location_proximity):
-   - "perfect": Exact city + district match
-   - "adjacent_district": Neighboring district (e.g., Mokotów ↔ Ursynów)
-   - "different_district": Same city, distant district
-   - "different_city": Different city
+                3. **Location Proximity** (location_proximity):
+                - "perfect": Exact city + district match
+                - "adjacent_district": Neighboring district (e.g., Mokotów ↔ Ursynów)
+                - "different_district": Same city, distant district
+                - "different_city": Different city
 
-4. **Overall Match Decision** (matches.matches):
-   Set to TRUE only if ALL these conditions are met:
-   * theme_proximity is "perfect" OR "closely_related"
-   * date_proximity is "perfect" OR "within_a_week"  
-   * location_proximity is "perfect" OR "adjacent_district"
-   
-   If ANY condition is not met → FALSE
+                4. **Overall Match Decision** (matches.matches):
+                Set to TRUE only if ALL these conditions are met:
+                * theme_proximity is "perfect" OR "closely_related"
+                * date_proximity is "perfect" OR "within_a_week"  
+                * location_proximity is "perfect" OR "adjacent_district"
+                
+                If ANY condition is not met → FALSE
 
-5. **Confidence Score** (match_confidence):
-   - 1.0 = Perfect match (all criteria perfectly met)
-   - 0.8-0.9 = Strong match (one minor difference)
-   - 0.6-0.7 = Good match (one criterion off)
-   - 0.4-0.5 = Partial match (multiple differences)
-   - 0.2-0.3 = Weak match (mostly wrong)
-   - 0.0-0.1 = No match
+                5. **Confidence Score** (match_confidence):
+                - 1.0 = Perfect match (all criteria perfectly met)
+                - 0.8-0.9 = Strong match (one minor difference)
+                - 0.6-0.7 = Good match (one criterion off)
+                - 0.4-0.5 = Partial match (multiple differences)
+                - 0.2-0.3 = Weak match (mostly wrong)
+                - 0.0-0.1 = No match
 
-6. **Overall Reasoning**: One-sentence Polish explanation
+                6. **Overall Reasoning**: One-sentence Polish explanation
 
-**PHASE 2 COMPLETION CHECKLIST** (populate phase_two_checklist):
-- "theme_checked": Did you classify theme proximity?
-- "date_checked": Did you classify date proximity?
-- "location_checked": Did you classify location proximity?
-- "boolean_logic_applied": Did you apply the AND logic correctly for matches.matches?
-- "confidence_justified": Does your confidence score match your proximity classifications?
+                **PHASE 2 COMPLETION CHECKLIST** (populate phase_two_checklist):
+                - "theme_checked": Did you classify theme proximity?
+                - "date_checked": Did you classify date proximity?
+                - "location_checked": Did you classify location proximity?
+                - "boolean_logic_applied": Did you apply the AND logic correctly for matches.matches?
+                - "confidence_justified": Does your confidence score match your proximity classifications?
 
-Remember: Be somewhat flexible but not overly permissive. The user wants relevant results."""
+                Remember: Be somewhat flexible but not overly permissive. The user wants relevant results."""
     
     def _update_state_from_result(self, result: ExtractedAndEvaluatedEvent, 
                                   page_id: str, raw_content: str, file_path: str,
                                   state: StateManager):
-        """Update state exactly as the original separate tools would"""
 
         event_dict = result.extracted_details.model_dump()
         event_dict["start_datetime"]["date"] = event_dict["start_datetime"]["date"].isoformat()
