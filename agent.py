@@ -52,8 +52,7 @@ class StateManager(BaseModel):
                                                     default=None)
     evaluated_page_ids: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
-    last_evaluation: EventEvaluation = Field(description="The last evaluation result of the event against user intent",
-                                             default=None)
+
     evaluation_history: List[Dict[str, Any]] = Field(default_factory=list,
                                                      description="All evaluated events with details and confidence scores")
 
@@ -67,6 +66,7 @@ class DependencyManager(BaseModel):
     parsing_model: str = Field(description="The model to use for parsing user queries")
     reading_model: str = Field(description="The model to use for reading event file contents")
     evaluation_model: str = Field(description="The model to use for evaluating event details against user intent")
+    read_n_eval_model: str = Field(description="The model used to read and evaluate event file contents against user query")
 
 #########################
 ###### User Intent ######
@@ -223,9 +223,9 @@ class ParseUserQueryTool(BaseModel):
         summary += f"Core Keywords: {', '.join([k.keyword for k in result.keywords])}\n"
         if result.expanded_keywords:
             summary += f"Expanded Keywords: {', '.join(result.expanded_keywords)}\n"
-        summary += "The user's requirements have been successfully extracted. Your required next action is 'search_event_pages' to find a list of potential events."
+        next_action = "The requirements have been successfully extracted. Your required next action is 'search_event_pages' to find a list of potential events."
 
-        return summary
+        return summary, next_action
 
 
 #################################
@@ -287,9 +287,9 @@ class SearchEventPageTitlesTool(BaseModel):
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
         summary = f"Searched using a refined query and expanded keywords, finding {len(results)} unique potential results."
-        summary += " You must now begin processing this list. Your required next action is 'select_best_event_file' to pick the most promising event."
+        next_action = "You must now begin processing this list. Your required next action is 'select_best_event_file' to pick the most promising event file."
                     
-        return summary
+        return summary, next_action
     
 
 ###########################################
@@ -390,23 +390,23 @@ class SelectEventFileTool(BaseModel):
     def summarise(self, result: SelectionDecision) -> str:
         """Create action summary based on the decision"""
         if "error" in result:
-            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
+            return f"Error: {result['error']}", f"Your next Suggested Action: {result['suggested_action']}"
 
         if not result:
             return f"Error: {result['error']}\nThere are no more events to check from the search list. You must now provide a final answer based on what you have found so far.\nThe required next action is 'final_answer'."
         
         if result.decision=="stop":
             summary = f"Decision: Stop searching. Reason: {result.think}\n"
-            summary += "I have concluded that further searching will not be fruitful. Your required next action is 'final_answer'."
-            return summary
+            next_action = "We concluded that further searching will not be fruitful. Your required next action is 'final_answer'."
+            return summary, next_action
         
         elif result.decision=="continue" and result.page_id:
             summary = f"Decision: Continue searching. Reason: {result.think}\n"
             summary += f"Selected next event file with page_id: {result.page_id}\n"
-            summary += "The next required action is to use the 'read_and_evaluate_event' tool to get the details of this file."
-            return summary
+            next_action = "The next required action is to use the 'read_and_evaluate_event' tool to get the details of this file."
+            return summary, next_action
 
-        return "An unexpected decision was made. Stopping search to be safe. Required next action is 'final_answer'."
+        return "An unexpected decision was made. Stopping search to be safe.", "Your required next action is 'final_answer'."
     
 
     def _build_decision_prompt(self, state: StateManager, unread_events: List[EventTitleResult]) -> str:
@@ -439,7 +439,7 @@ class SelectEventFileTool(BaseModel):
             
             summary_lines.append("\nTop evaluated events:")
             for e in sorted_evals[:5]:
-                summary_lines.append(f"- '{e['title']}' (Confidence: {e.get('match_confidence', 0):.2f}, Reason: {e['overall_reasoning']})")
+                summary_lines.append(f"- '{e['title']}' (Confidence: {e.get('match_confidence', 0):.4f}, Reason: {e['overall_reasoning']})")
 
             history_summary = "\n".join(summary_lines)
 
@@ -590,7 +590,7 @@ class ReadEventFileTool(BaseModel):
     def summarise(self, result: Dict[str, Any]) -> str:
         """Create conversation summary"""
         if "error" in result:
-            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
+            return f"Error: {result['error']}", f"Your next Suggested Action: {result['suggested_action']}"
         
         summary = result["summary"]
         
@@ -607,8 +607,9 @@ class ReadEventFileTool(BaseModel):
         
         summary_str = " ".join(parts)
 
-        summary_str += f"\nThe details for event '{summary['title']}' have been read and parsed. Your required next action is 'evaluate_event_details_against_user_query' to check if it's a match."
-        return summary_str
+        summary_str += f"\nThe details for event '{summary['title']}' have been read and parsed." 
+        next_action = "Your required next action is 'evaluate_event_details_against_user_query' to check if it's a match."
+        return summary_str, next_action
 
 class EventMatches(BaseModel):
     """Represents whether the event matches the user's requirements."""
@@ -737,7 +738,6 @@ class EvaluateEventTool(BaseModel):
             eval_dict["page_id"] = state.event_details["page_id"]
             eval_dict["title"] = state.event_details['parsed']['title']
             
-            state.last_evaluation = eval_dict
             state.evaluated_page_ids.append(state.event_details["page_id"])
             state.evaluation_history.append(eval_dict)
 
@@ -804,14 +804,14 @@ class ReadAndEvaluateEventTool(BaseModel):
         
         try:            
             result = deps.client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model=deps.read_n_eval_model,
                 response_model=ExtractedAndEvaluatedEvent,
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": extraction_and_evaluation_prompt}
                 ],
                 max_retries=deps.max_retries,
-                temperature=0.0)        
+                temperature=0.0)     
 
             if not all(result.phase_one_checklist.values()):
                 logfire.warning(f"Extraction incomplete for {page_id}", 
@@ -989,7 +989,6 @@ Remember: Be somewhat flexible but not overly permissive. The user wants relevan
         eval_dict["page_id"] = page_id
         eval_dict["title"] = event_dict['title']
         
-        state.last_evaluation = eval_dict
         state.evaluated_page_ids.append(page_id)
         state.evaluation_history.append(eval_dict)
     
@@ -1006,12 +1005,12 @@ Remember: Be somewhat flexible but not overly permissive. The user wants relevan
             summary = (f"Event '{title}' is a match! "
                       f"({evaluation.match_confidence:.0%} confident). "
                       f"I have saved all details.")
-            summary += "\nYour required next action is 'select_best_event_file' to continue processing the list."
+            next_action = "Your required next action is 'select_best_event_file' to continue processing the list."
         else:
             summary = (f"Event '{title}' doesn't match - {evaluation.overall_reasoning}.")
-            summary += "\nYour required next action is 'select_best_event_file' to try the next event."
+            next_action = "Your required next action is 'select_best_event_file' to try the next event."
         
-        return summary
+        return summary, next_action
         
 ########################
 ##### FINAL ACTION #####
@@ -1270,7 +1269,8 @@ class MyAgent:
                  reading_model: str = "gpt-4.1-mini",
                  parsing_model: str = "gpt-4.1-mini" , 
                  evaluation_model: str = "gpt-4.1-mini",
-                 verbose: bool = True):
+                 read_n_eval_model: str = "gpt-4.1-mini",
+                 verbose: bool = False):
 
         self.verbose = verbose
         self.state = StateManager()
@@ -1283,7 +1283,7 @@ class MyAgent:
             parsing_model=parsing_model,
             evaluation_model=evaluation_model,
             reading_model=reading_model,
-            
+            read_n_eval_model=read_n_eval_model,            
             event_dir=EVENT_DIR)
         
         self.conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -1331,16 +1331,17 @@ class MyAgent:
                     
                 results = action.execute(state=self.state, deps=self.deps)
 
-                summary = action.summarise(results)
+                summary, next_action = action.summarise(results)
                 action_summary = f"Action: {action.action_type}\n\nThink: {action.think}\n\nResult: {summary}\n"
                 logfire.info(f"Action summary at step: {step_num+1}: {action_summary}")
                 logfire.info(f"State at step: {step_num+1}: {self.state.model_dump()}")
                 self._log(action_summary)
 
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": action_summary
-                })
+                self.conversation_history.extend([
+                    {"role": "assistant",
+                    "content": action_summary},
+                    {"role": "user",
+                    "content": next_action}])
                 logfire.info(f"Conversation history at step {step_num+1}: {self.conversation_history}")
 
                 self.action_history.append({
