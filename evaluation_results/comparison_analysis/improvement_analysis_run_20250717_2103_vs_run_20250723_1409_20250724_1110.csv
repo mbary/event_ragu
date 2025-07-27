@@ -1,0 +1,4 @@
+metric,improvement,run1_score,run2_score
+Factual Correctness [GEval],63.21839080459769,0.435,0.71
+Answer Relevancy,10.126582278481006,0.79,0.87
+Faithfulness,1.583434835566384,0.821,0.834

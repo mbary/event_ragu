@@ -1,0 +1,24 @@
+{
+  "export_timestamp": "20250724_1110",
+  "run1": {
+    "name": "run_20250717_2103",
+    "file_path": ".deepeval/run_20250717_2103/.deepeval-cache_20250717_2103.json",
+    "total_evaluations": 150
+  },
+  "run2": {
+    "name": "run_20250723_1409",
+    "file_path": ".deepeval/run_20250723_1409/.deepeval-cache_20250723_1409.json",
+    "total_evaluations": 30
+  },
+  "metrics_compared": [
+    "Factual Correctness [GEval]",
+    "Answer Relevancy",
+    "Faithfulness"
+  ],
+  "overall_statistics": {
+    "run1_mean_score": 0.6819709197944225,
+    "run2_mean_score": 0.8046911549646044,
+    "run1_success_rate": 0.6533333333333333,
+    "run2_success_rate": 0.8
+  }
+}

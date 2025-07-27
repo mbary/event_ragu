@@ -1,0 +1,7 @@
+run_id,metric_name,Count,Mean_Score,Score_Std,Min_Score,Max_Score,Success_Rate,Total_Success,Threshold
+run_20250717_2103,Answer Relevancy,50,0.79,0.313,0.0,1.0,0.72,36,0.7
+run_20250717_2103,Factual Correctness [GEval],50,0.435,0.361,0.0,0.908,0.44,22,0.5
+run_20250717_2103,Faithfulness,50,0.821,0.227,0.25,1.0,0.8,40,0.6
+run_20250723_1409,Answer Relevancy,10,0.87,0.275,0.111,1.0,0.9,9,0.7
+run_20250723_1409,Factual Correctness [GEval],10,0.71,0.305,0.0,0.978,0.8,8,0.5
+run_20250723_1409,Faithfulness,10,0.834,0.221,0.333,1.0,0.7,7,0.7

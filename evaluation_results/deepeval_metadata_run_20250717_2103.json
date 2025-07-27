@@ -1,0 +1,16 @@
+{
+  "run_id": "run_20250717_2103",
+  "source_file": "/home/michal/projects/maven/my_ai_agent/.deepeval/run_20250717_2103/.deepeval-cache_20250717_2103.json",
+  "total_test_cases": 50,
+  "total_evaluations": 150,
+  "metrics": [
+    "Factual Correctness [GEval]",
+    "Answer Relevancy",
+    "Faithfulness"
+  ],
+  "evaluation_date": [
+    "20250717",
+    "2103"
+  ],
+  "overall_success_rate": 0.6533333333333333
+}
