@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Union, List, Literal, Optional, Dict, Any, Set
 from pathlib import Path
 
@@ -10,11 +10,12 @@ import instructor
 from anthropic import Anthropic
 from pydantic import BaseModel, Field
 from openai import OpenAI
-
+import logfire
 from dotenv import load_dotenv
-load_dotenv()
 from pprint import pprint
 from setup_db import init_collection
+load_dotenv()
+
 
 
 EVENT_DIR = Path("data/events")
@@ -31,33 +32,29 @@ EVENT_DIR = Path("data/events")
 class StateManager(BaseModel):
     """State manager to keep track of the conversation, extracted values and actions taken."""
 
-    original_query: Optional[str] = Field(description="The original user query that initiated the conversation"
-                                          , default=None)
+    original_query: Optional[str] = Field(description="The original user query that initiated the conversation",
+                                          default=None)
 
-    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query", default=None)
+    user_intent: Optional[UserIntent] = Field(description="The user's intent extracted from the original query",
+                                              default=None)
     
-    search_title_results: Dict = Field(description="List of event pages found using title embedding similarity search",
-                                       default_factory=dict)
-    current_search_keyword: Optional[str] = Field(description="The current keyword being searched for in the event pages"
-                                                  , default=None)
-    exhausted_search_keywords: Set[str] = Field(description="List of keywords that have been searched for and exhausted",
-                                                 default_factory=set)
-    selected_page_id: Optional[str] = Field(description="The current page_id being processed"
-                                            , default=None)
+    search_title_results: List = Field(description="List of event pages found using title embedding similarity search",
+                                       default_factory=list)                                       
+    selected_page_id: Optional[str] = Field(description="The current page_id being processed",
+                                            default=None)
 
-    read_event_page_ids: Set = Field(description="List of event page_ids that have been read", default_factory=set)
-    read_event_pages_content_dict: Dict = Field(description="Dictionary of event pages that have been read with their contents", default_factory=dict)
+    read_event_page_ids: Set = Field(description="List of event page_ids that have been read", 
+                                     default_factory=set)
+    read_event_pages_content_dict: Dict = Field(description="Dictionary of event pages that have been read with their contents",
+                                                default_factory=dict)
 
-    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file"
-                                                    , default=None)
+    event_details: Optional[Dict[str, Any]] = Field(description="Structured event information extracted from the file",
+                                                    default=None)
     evaluated_page_ids: List = Field(description="List of event pages that have been evaluated for relevance against the user intent",
                                         default_factory=list)
-    last_evaluation: EventEvaluation = Field(description="The last evaluation result of the event against user intent"
-                                                       , default=None)
-    evaluation_history: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="All evaluated events with details and confidence scores"
-    )
+
+    evaluation_history: List[Dict[str, Any]] = Field(default_factory=list,
+                                                     description="All evaluated events with details and confidence scores")
 
 class DependencyManager(BaseModel):
     """A class to manage shared dependencies and configurations for the agent."""
@@ -69,6 +66,7 @@ class DependencyManager(BaseModel):
     parsing_model: str = Field(description="The model to use for parsing user queries")
     reading_model: str = Field(description="The model to use for reading event file contents")
     evaluation_model: str = Field(description="The model to use for evaluating event details against user intent")
+    read_n_eval_model: str = Field(description="The model used to read and evaluate event file contents against user query")
 
 #########################
 ###### User Intent ######
@@ -82,12 +80,7 @@ class UserIntentDateTime(BaseModel):
             description="The end date extracted from the user query in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).")
     confidence: float = Field(ge=0, le=1,
                                 description="Confidence score of the datetime extraction (0-1).")
-    
-class UserIntentKeyWord(BaseModel):
-    """Class represents a keyword and associated confidence extracted from the user query."""
-    keyword: str = Field(description="A keyword identifying an event type or activity.")
-    confidence: float = Field(ge=0, le=1, description="Confidence score of the keyword extraction (0-1).")
-    
+       
 class UserIntent(BaseModel):
     """Represents the user's intent for the event search."""
     think: str = Field(
@@ -102,53 +95,83 @@ class UserIntent(BaseModel):
     location: Optional[str] = Field(description="The location where the user wants to find events.", 
                                     example=["Ursus", "Stadion Narodowy", 
                                             "Centrum Nauki Kopernik",
-                                            "Park","Teatr","Opera"])
+                                            "Park","Teatr","Opera"])                                                
 
-    keywords: List[UserIntentKeyWord] = Field(description="Keywords that identify the type of event or activity being sought.",
-                                              max_length=5, 
-                                              min_length=1)
+    semantic_search_query: str = Field(description="A detailed, descriptive query synthesized from all extracted user intent components, optimized for vector search.")
 
 class ParseUserQueryTool(BaseModel):
-    """Parse user query extracting user requirements."""
+    """
+    Parses the user's initial text query to extract structured intent (semantic_search_query, location, dates).
+    Use this ONLY as the FIRST step for a new user request.
+    Do NOT use this tool if you have already parsed the query and are in the process of evaluating search results.
+    """
     think: str = Field(description="Why is this extraction needed and what information is sought")
     action_type: Literal["parse_user_query"] = "parse_user_query"
-
+    
+    @logfire.instrument('parse_user_query', extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> UserIntent:
         """Extract user intent from the user query."""
 
         SYSTEM_PROMPT_INTENT_EXTRACTION = f"""You are a world-class expert at extracting user intent from the user query in a form of unstructured text.
 
         The current_date is {date.today().isoformat()}.
-
-        Returns:
+        **Returns**:
         - think: A thought process or reasoning behind the user's intent extraction.
         - query: A refined user query.
         - action_type: The type of action to be performed, which is always "parse_user_query".
         - timeframe: The timeframe for the event search, represented as a datetime object in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ).
         - city: The city where the user wants to find events, represented as a string.
         - location: The location where the user wants to find events, represented as a string.
-        - keywords: A list of keywords, strictly related to the users query.
 
-        Date Extraction Rules:
-        1. No date/time mentioned -> start_date = current_date; end_date = current_date + 14 days.
-        2. Only month is mentioned:
-            - If current month matches -> start_date = current_date; end_date = last day of the month.
-            - If next month is mentioned -> start_date = first day of that month; end_date = last day of that month.
-        3. Specific date mentioned -> start_date = that date.
-        4. If a timeframe is mentioned (e.g., "next week", "in two weeks", "this weekend", "next weekend"):
-            - start_date = start date of that time frame; end_date = end date of that time frame.
-        5. If a date range is mentioned -> extract both start and end date.
-
-        Examples (assuming current_date is 2025-07-14):
-            - "zajęcia z badmintona" → start: 2025-07-14, end: None
-            - "zajęcia z badmintona w lipcu" → start: 2025-07-14, end: 2025-07-31
-            - "zajęcia z badmintona w sierpniu" → start: 2025-08-01, end: 2025-08-31
-            - "zajęcia z badmintona 20 lipca" → start: 2025-07-20, end: None
+        **Your task has two phases:**
+        1.  **Parse Phase:** Analyze the user's raw text to extract structured information (semantic_search_query, location, timeframe).
+        2.  **Synthesize Phase:** Use the structured information you just extracted to construct a new, ideal 'semantic_search_query'.
         
-        City Extraction Rules:
-        1. If no city is mentioned -> city = Warsaw.
+        ---------------------------------
+        **PHASE 1: PARSING RULES:**
+        *    **Date Extraction Rules:**
+            * No date/time mentioned -> start_date = current_date; end_date = current_date + 2 months.
+            * Only month is mentioned:
+                - start_date = first day of that month; end_date = last day of that month.
+            * Specific date mentioned -> start_date = that date.
+            * If a timeframe is mentioned (e.g., "next week", "in two weeks", "this weekend", "next weekend"):
+                - start_date = start date of that time frame; end_date = end date of that time frame.
+            * If a date range is mentioned -> extract both start and end date.
 
+            Examples (assuming current_date is 2025-07-14):
+                - "zajęcia z badmintona" → start: 2025-07-14, end: None
+                - "zajęcia z badmintona w lipcu" → start: 2025-07-14, end: 2025-07-31
+                - "zajęcia z badmintona w sierpniu" → start: 2025-08-01, end: 2025-08-31
+                - "zajęcia z badmintona 20 lipca" → start: 2025-07-20, end: None
+            
+        *    **City Extraction Rules:**
+            * If no city is mentioned -> city = Warsaw.
+        ---------------------------------
+        **PHASE 2: SYNTHESIS RULES FOR 'semantic_search_query'**
 
+        Your goal is to create the most descriptive and unambiguous query possible. Combine the structured elements into a natural, flowing sentence.
+
+        *   **Structure:** Follow a pattern like: '[Adjectives/Keywords] [Event Type] dla [Audience] w lokalizacji [Specific Location], [City] w okresie [Descriptive Timeframe]'.
+        *   **Be Descriptive:**
+            *   Instead of just the keyword "pilates", use "darmowe zajęcia pilates".
+            *   Instead of just "lipiec", use a more descriptive phrase like "w miesiącu lipcu 2025" or "w weekend 5-6 lipca 2025".
+            *   Explicitly mention the city and district.
+        *   **The query should be a complete thought that fully captures the user's request.**
+
+        ---------------------------------
+        **EXAMPLES:**
+
+        **Example 1:**
+        *   **User Input:** "darmowe pilates ursynów w lipcu 2025"
+        *   **Parsed Data:**  location="Ursynów", timeframe="2025-07-01 to 2025-07-31"
+        *   **Ideal 'semantic_search_query':** "darmowe zajęcia pilates dla dorosłych w dzielnicy Ursynów w Warszawie w miesiącu lipcu 2025"
+
+        **Example 2:**
+        *   **User Input:** "koncerty dla dzieci w ten weekend"
+        *   **Parsed Data:** timeframe="2025-07-19 to 2025-07-20" (assuming today is before that weekend)
+        *   **Ideal 'semantic_search_query':** "koncerty muzyczne dla dzieci i rodzin w Warszawie w weekend 19-20 lipca 2025"
+
+        ---------------------------------
         All responses **MUST** be in Polish language.
         """
         user_query = state.original_query
@@ -163,7 +186,6 @@ class ParseUserQueryTool(BaseModel):
             ],
             temperature=0.0)
         state.user_intent = intent
-
         return intent
     
     def summarise(self, result: UserIntent) -> str:
@@ -173,14 +195,14 @@ class ParseUserQueryTool(BaseModel):
                     "suggested_action": "Try parsing the user query again with 'parse_user_query'"}
         
         summary = f"Think: {result.think}\n"
-        summary += f"Extracted user intent:\n"
+        summary += f"Parsed user query:\n"
         summary += f"Timeframe: {result.timeframe.start_date.isoformat()}-{result.timeframe.end_date.isoformat() if result.timeframe.end_date else 'N/A'}\n"
         summary += f"City: {result.city}\n"
         summary += f"Location: {result.location}\n"
         summary += f"Refined User Query: {result.query_refined}\n"
-        summary += "Now that the user's requirements are understood, the next step is to use 'search_event_pages' to find relevant events based on the extracted keywords."
+        next_action = "The requirements have been successfully extracted. Your required next action is 'search_event_pages' to find a list of potential events."
 
-        return summary
+        return summary, next_action
 
 
 #################################
@@ -194,63 +216,54 @@ class EventTitleResult(BaseModel):
     distance: float = Field(description="Distance score of the similarity embedding search")
 
 class SearchEventPageTitlesTool(BaseModel):
-    """Search for top 10 relevant event pages using title embedding similarity. Use this to get an initial list of potential events. 
-       DO NOT use this if you have already selected a specific file and need to read its contents."""
+    """
+    Searches the database for event pages based on the parsed user intent.
+    This should be used immediately after 'parse_user_query' to get an initial list of events.
+    Do NOT use this tool if a list of search results already exists. If results are present, your job is to process them using 'select_best_event_file'.
+    """
     think: str = Field(description="Why is this search needed and what information is sought")
     action_type: Literal["search_event_pages"] = "search_event_pages"
 
-    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]:
+    @logfire.instrument("search_event_pages", extract_args=True, record_return=True)
+    def execute(self, state: StateManager, deps: DependencyManager) -> List[EventTitleResult]:
 
         if not state.user_intent:
             return {"error": "User intent not found in state. Please extract user intent first using parse_user_query tool.",
                     "suggested_action": "parse_user_query"}
-        elif not state.user_intent.keywords:
-            return {"error": "No keywords found in user intent. Please ensure the user intent extraction included keywords.",
-                    "suggested_action": "parse_user_query"}
-        keywords = [k.keyword for k in state.user_intent.keywords]
-        final_dict = {}
 
-        for keyword in keywords:
-            kw_dict = {}
-            kw_results = deps.collection.query(
-                query_texts=[keyword],
-                n_results=10)
+        results_dict={}
 
-            output = []
-            for i in range(len(kw_results['ids'][0])):
-                output.append(EventTitleResult(
-                    page_id=kw_results['ids'][0][i],
-                    title=kw_results['metadatas'][0][i]['title'],
-                    distance=kw_results['distances'][0][i]
-                ))
-            
-            kw_dict["results"] = output
-            kw_dict["min_distance"] = min([res.distance for res in output])
+        query_results = deps.collection.query(
+            query_texts=[state.user_intent.semantic_search_query],
+            n_results=20)
 
+        for i in range(len(query_results['ids'][0])):
+            page_id = query_results['ids'][0][i]
 
-            final_dict["_".join(keyword.split(" "))] = kw_dict
+            if page_id not in results_dict:
+                results_dict[page_id] = EventTitleResult(
+                    page_id=page_id,
+                    title=query_results['metadatas'][0][i]['title'],
+                    distance=query_results['distances'][0][i]
+                )
 
-        state.search_title_results.update(final_dict)
+        final_results=list(results_dict.values())
+        final_results.sort(key=lambda x: x.distance)
 
-        return final_dict
+        state.search_title_results = final_results
+
+        return final_results
     
-    def summarise(self, results: Dict[str, Dict[str, Union[float, List[EventTitleResult]]]]) -> str:
+    def summarise(self, results: List[EventTitleResult]) -> str:
         """summarise the search results."""
-        keywords = list(results.keys())
 
-        if "error" in results:
+        if isinstance(results, dict) and "error" in results:
             return f"Error: {results['error']}. Suggested action: {results['suggested_action']}"
 
-        summary = f'To search for event pages most relevant to the user query, I used the following keywords: {", ".join(keywords)}.\n'
-        summary += "Each keyword yielded the following results:\n"
-        for keyword in keywords:
-            summary += f"Keyword: {keyword}\n"
-            summary += f"Minimum Distance: {results[keyword]['min_distance']}\n"
-            summary += f"File count: {len(results[keyword]['results'])}\n"
-
-        summary += "A list of potential events has been found. The next step is to use 'select_best_event_file' to pick the single most promising event to investigate further."
+        summary = f"Searched using a refined query and, finding {len(results)} unique potential results."
+        next_action = "You must now begin processing this list. Your required next action is 'select_best_event_file' to pick the most promising event file."
                     
-        return summary
+        return summary, next_action
     
 
 ###########################################
@@ -298,173 +311,145 @@ class EventDetails(BaseModel):
 ########### READ FILE CONTENTS ###########
 ##########################################
 
+class SelectionDecision(BaseModel):
+    """"Represents the decision whether to continue searching or stop"""
+    think: str = Field(description="The reasoning behind the decision to continue or stop")
+    decision: Literal["continue", "stop"] = Field(description="The final decision")
+    page_id: Optional[str] = Field(description="The page_id of the next file to process, if the decision is 'continue'",
+    default=None)
+
 class SelectEventFileTool(BaseModel):
-    """Select the event file with the smallest distance measure."""
-    think: str = Field(description="I should select the event file based on the smallest distance measure.")
+    """
+    Analyzes the current search state and decides whether to continue processing files or to stop.
+    If continuing, it selects the single best, unread event file from the existing search results list.
+    Use this to begin processing a search list OR to get the next event after a previous one was not a match.
+    If stopping, it provides the reason.
+    This is the core decision-making tool for iterating through search results.lts.
+    """
+    think: str = Field(description="My thought process on why I need to make a continue/stop decision now.")
     action_type: Literal["select_best_event_file"] = "select_best_event_file"
 
-    def execute(self, state: StateManager, deps: DependencyManager) -> str:
+    @logfire.instrument("select_best_event", extract_args=True, record_return=True)
+    def execute(self, state: StateManager, deps: DependencyManager) -> SelectionDecision:
         if not state.search_title_results:
             return {"error": "No search results found. Please perform a search first using search_event_pages.",
                     "suggested_action": "search_event_pages"}
-        
-        if not state.current_search_keyword:
-            state.current_search_keyword = min(state.search_title_results, key=lambda x: state.search_title_results[x]["min_distance"])
 
-        state.selected_page_id = self._get_page_id(state.current_search_keyword, state)
+        unread_events = [res for res in state.search_title_results if res.page_id not in state.read_event_page_ids]
 
-        if not state.selected_page_id:
-            state.exhausted_search_keywords.append(state.current_search_keyword)
-            state.current_search_keyword = self._get_next_keyword(state)
+        if not unread_events:
+            return SelectionDecision(
+                think="There are no more files in the search results to process. The search is complete",
+                decision="stop")
 
-            if not state.current_search_keyword:
-                return {"error": "No more keywords to search. Generate a new query or proceed to provide the final answer.",
-                        "suggested_action": "final_action or parse_user_query"}
+        decision_prompt = self._build_decision_prompt(state, unread_events)
+        logfire.info(f"Decision Prompt: {decision_prompt}")
+        decision = deps.client.chat.completions.create(
+            model=deps.main_model,
+            response_model=SelectionDecision,
+            messages=[
+                {"role":"system", "content":"You are a meticulous and strategic research assistant. Your goal is to find all highly relevant results, not just the first one. You stop only when the potential for finding better results diminishes significantly."},
+                {"role":"user", "content":decision_prompt}
+            ],
+            max_retries=deps.max_retries,
+            temperature=0.0)
 
-        return state.selected_page_id
+        if decision.decision=="continue":
+            best_next_event = min(unread_events, key=lambda x: x.distance).page_id
+            decision.page_id = best_next_event
+            state.selected_page_id = best_next_event
+
+        return decision        
     
-    def summarise(self, result: str) -> str:
-        """Create action summary"""
+    def summarise(self, result: SelectionDecision) -> str:
+        """Create action summary based on the decision"""
         if "error" in result:
-            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
+            return f"Error: {result['error']}", f"Your next Suggested Action: {result['suggested_action']}"
+
+        if not result:
+            return f"Error: {result['error']}\nThere are no more events to check from the search list. You must now provide a final answer based on what you have found so far.\nThe required next action is 'final_answer'."
         
-        return f"Selected event file with page_id: {result}\nThe next logical step is to use the 'read_event_file_contents' tool to get the details of this file"
+        if result.decision=="stop":
+            summary = f"Decision: Stop searching. Reason: {result.think}\n"
+            next_action = "We concluded that further searching will not be fruitful. Your required next action is 'final_answer'."
+            return summary, next_action
+        
+        elif result.decision=="continue" and result.page_id:
+            summary = f"Decision: Continue searching. Reason: {result.think}\n"
+            summary += f"Selected next event file with page_id: {result.page_id}\n"
+            next_action = "The next required action is to use the 'read_and_evaluate_event' tool to get the details of this file."
+            return summary, next_action
+
+        return "An unexpected decision was made. Stopping search to be safe.", "Your required next action is 'final_answer'."
     
-    def _get_page_id(self, keyword: str, state: StateManager) -> str:
-        """Get the page_id of the selected event file."""
-        try:
-            page_id = min([res for res in state.search_title_results[keyword]["results"] if res.page_id not in state.read_event_page_ids],
-                        key=lambda x: x.distance).page_id
 
-            return page_id
-        # empty list -> attribute rror return none and use new keyword
-        except AttributeError:
-            return None
-        
-    def _get_next_keyword(self, state: StateManager) -> str:
-        state.exhausted_search_keywords.add(state.current_search_keyword)
-        keyword = min((key for key in state.search_title_results if key not in state.exhausted_search_keywords), 
-                                  key=lambda x: state.search_title_results[x]["min_distance"])
+    def _build_decision_prompt(self, state: StateManager, unread_events: List[EventTitleResult]) -> str:
 
-        return keyword
+        history_summary = "No events have been evaluated yet."
+        min_distance_of_good_match = float('inf')
 
+        if state.evaluation_history:
+            sorted_evals = sorted(state.evaluation_history, key=lambda e: e.get('match_confidence', 0), reverse=True)
+            good_matches = [e for e in sorted_evals if e.get('match_confidence', 0) >= 0.7]
 
-class ReadEventFileTool(BaseModel):
-    """Use this tool to read the full contents of a specific event file AFTER it has been chosen by 'select_best_event_file'."""
+            if good_matches:
+                best_match_page_id = good_matches[0]['page_id']
+                last_match_page_id = good_matches[-1]['page_id']
+                for res in state.search_title_results:
+                    if res.page_id == best_match_page_id:
+                        min_distance_of_good_match = res.distance
+                        break
 
-    action_type: Literal["read_event_file_contents"] = "read_event_file_contents"
-    think: str = Field(description="Why reading this specific event file")
-    
-    def execute(self, state: StateManager, deps: DependencyManager) -> Dict[str, Any]:
-        if not state.selected_page_id:
-            return {"error": "No page_id selected. Please select a file first using select_best_event_file.",
-                    "suggested_action": "select_best_event_file"}
-        
-        page_id = state.selected_page_id
-        
-        try:
-            file_path = os.path.join(deps.event_dir, f"{page_id}.md")
-            with open(file_path, 'r', encoding='utf-8') as f:
-                raw_content = f.read()
-
-            extraction_prompt = f"""Extract structured event information from this file.
-
-                                    User Requirements:
-                                    - timeframe: {state.user_intent.timeframe.start_date.isoformat()} - {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
-
-                                    Event File Content:
-                                    {raw_content}
-
-                                    Instructions:
-                                    - Identify the event type based on the content (concert, exhibition, theater, workshop, festival, etc.)
-                                    - Extract all date/time information
-                                    - Identify the specific venue/location and city
-                                    - Note the district/neighborhood if mentioned
-                                    - Create a brief 1-2 sentence summary
-                                    - Extract any pricing, audience, or registration information
-                                    - Use your knowledge to infer missing information when reasonable
-                                    - Always provide answers in Polish language
-
-                                    Date Extraction Rules:
-                                    1. If an event has recurring dates -> start_date = the date closest to user- defined timeframe.
-                                    """
-
-            parsed_event = deps.client.chat.completions.create(
-                model=deps.reading_model,
-                response_model=EventDetails,
-                messages=[
-                    {"role": "system", "content": "You are an expert at extracting and structuring event information. Use your knowledge of cities, venues, and event types to provide complete information."},
-                    {"role": "user", "content": extraction_prompt}
-                ],
-                max_retries=deps.max_retries,
-                temperature=0.0
-            )
-            event_dict = parsed_event.model_dump()
-            event_dict["start_datetime"]["date"] = event_dict["start_datetime"]["date"].isoformat()
-            event_dict["end_datetime"]["date"] = event_dict["end_datetime"]["date"].isoformat()
-            if event_dict.get("recurring_dates"):
-                event_dict["recurring_dates"] = [_date.isoformat() for _date in event_dict["recurring_dates"].get("all_dates", [])]
-
-            state.event_details = {
-                "page_id": page_id,
-                "raw_content": raw_content,
-                "parsed": event_dict,
-                "file_path": file_path
-            }
+                for res in state.search_title_results:
+                    if res.page_id == last_match_page_id:
+                        min_distance_of_last_match = res.distance
+                        break
             
-            location_str = f"{event_dict['location']}, {event_dict['city']}"
-            if event_dict.get('district'):
-                location_str += f" ({event_dict['district']})"
+            summary_lines = [f"So far, you have evaluated {len(sorted_evals)} event(s)."]
+            if good_matches:
+                summary_lines.append(f"\nFound {len(good_matches)} high-confidence matches (confidence >= 0.7).")
+                summary_lines.append(f"The best so far had a search distance of {min_distance_of_good_match:.2f}.")
+                summary_lines.append(f"The last match had a search distance of {min_distance_of_last_match:.2f}")
             
-            summary_data = {
-                "page_id": page_id,
-                "summary": {
-                    "title": event_dict['title'],
-                    "type": event_dict['event_type'],
-                    "date": event_dict['start_datetime']['date'],
-                    "location": location_str,
-                    "brief": event_dict.get('summary', event_dict['description'] + "...")
-                }
-            }
-            if event_dict.get('price_info'):
-                summary_data["summary"]["price"] = event_dict['price_info']
-            if event_dict.get('target_audience'):
-                summary_data["summary"]["audience"] = event_dict['target_audience']
+            summary_lines.append("\nTop evaluated events:")
+            for e in sorted_evals[:5]:
+                summary_lines.append(f"- '{e['title']}' (Confidence: {e.get('match_confidence', 0):.4f}, Reason: {e['overall_reasoning']})")
 
-            state.read_event_page_ids.add(page_id)
-            state.read_event_pages_content_dict[page_id] = event_dict
-            
-            return summary_data
-            
-        except FileNotFoundError:
-            return {"error": f"Event file not found: {page_id}.md",
-                    "suggeste_action":"Select another file using select_best_event_file"}
-        except Exception as e:
-            return {"error": f"Failed to read or parse event file: {str(e)}",
-                    "suggested_action": "No idea mate, think of something"} ##TODO correct this XD 
-    
-    def summarise(self, result: Dict[str, Any]) -> str:
-        """Create conversation summary"""
-        if "error" in result:
-            return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
-        
-        summary = result["summary"]
-        
-        parts = [
-            f"Read event '{summary['title']}'",
-            f"({summary['type']})",
-            f"on {summary['date']}",
-            f"at {summary['location']},",
-            f"Summary: {summary['brief'][:100]}"
-        ]
+            history_summary = "\n".join(summary_lines)
 
-        if summary.get('price'):
-            parts.append(f"- {summary['price']}")
+        preview_limit = 5
+        upcoming_summary = "Here are the next best search results to consider:\n"
+        for event in sorted(unread_events, key=lambda x: x.distance)[:preview_limit]:
+            upcoming_summary += f"- '{event.title}' (search distance: {event.distance:.2f})\n"
         
-        summary_str = " ".join(parts)
+        prompt = f"""
+        You must make a strategic decision: should you continue processing search results or stop now?
+        Your goal is to find ALL highly relevant events, not just the first one.
 
-        summary_str += f"\nThe details for event '{summary['title']}' have been read.\nNow, these details must be compared against the user's original request using the 'evaluate_event_details_against_user_query' tool."
-        return summary_str
+        **CONTEXT:**
+        Your original query was: "{state.original_query}"
+
+        **SEARCH HISTORY**
+        {history_summary}
+
+        **UPCOMING RESULTS:**
+        {upcoming_summary}
+
+        **YOUR TASK: Apply the principle of diminishing returns by analyzing the search distances.**
+        Weigh the quality of events already found against the potential of upcoming events.
+        The "search distance" measures relevance (lower is better). Your primary task is to identify a "jump" in this distance, which signals that the remaining results are of lower quality.
+
+        - **You SHOULD CONTINUE if:**
+            - You haven't found any high-confidence (>=0.7) matches yet, and the upcoming results still have low search distances and relatively close to each other.
+            - You HAVE found good matches, but the next unread event has a search distance that is **similar to or better than** the best match or the last match you've already found (e.g., best or the last found was 0.25, next is 0.28). This indicates it could be another excellent match. An increase of up to 0.05 between matches is acceptable.
+
+        - **You SHOULD STOP if:**
+            - You have found at least one high-confidence match, AND the search distances of the upcoming events are **significantly worse** than your best match's distance (e.g., best found was 0.25, next is 0.6). This indicates diminishing returns.
+            - The titles of the upcoming events are clearly and completely unrelated to the user's query, even if their distance is low.
+
+        Based on this analysis, decide whether to 'continue' or 'stop' and provide your reasoning.
+        """
+        return prompt
 
 class EventMatches(BaseModel):
     """Represents whether the event matches the user's requirements."""
@@ -486,122 +471,281 @@ class EventEvaluation(BaseModel):
                                     0.0-0.1 = No match (completely different)""")
     
     theme_evaluation: str = Field(description="Evaluation of the event's core subject matter or theme.")
-    theme_matches: bool
+    theme_proximity: Literal["perfect", "closely_related", "broadly_related", "unrelated"] = Field(
+        description="How close the event's theme is to the user's request."
+    )
     
     date_evaluation: str = Field(description="Evaluation of date match")
-    date_matches: bool
+    date_proximity: Literal["perfect", "within_a_week", "within_a_month", "outside_timespan"] = Field(
+        description="How close the event's date is to the user's timeframe."
+    )
     
     location_evaluation: str = Field(description="Evaluation of location match")
-    location_matches: bool
+    location_proximity: Literal["perfect", "adjacent_district", "different_district", "different_city"] = Field(
+        description="How close the event's location is to the user's request."
+    )
     
-    type_evaluation: str = Field(description="Evaluation of event type/keywords match")
+    type_evaluation: str = Field(description="Evaluation of event type match")
     type_matches: bool
     
     overall_reasoning: str = Field(description="Overall reasoning for the decision")
     recommendation: str = Field(description="What to do next - try another event or provide this one")
 
-class EvaluateEventTool(BaseModel):
-    """Use this AFTER reading an event's contents with 'read_event_file_contents' to determine if it's a good match for the user.
-    Compares the most recently read event (from the state) against the user's initial requirements (also from the state).
-
-    Returns:
-        EventEvaluation: The evaluation result containing match confidence, reasoning, and recommendations.
-    """
-    action_type: Literal["evaluate_event_details_against_user_query"] = "evaluate_event_details_against_user_query"
-    think: str = Field(description="What aspects need careful evaluation")
+class ExtractedAndEvaluatedEvent(BaseModel):
+    """Combined model that ensures both phases complete properly"""
+    extracted_details: EventDetails    
+    evaluation: EventEvaluation
     
-    def execute(self, state: StateManager, deps: DependencyManager) -> EventEvaluation:
-        if not state.event_details:
-            return {"error": "No event details found. Please read an event file first.", 
-                    "suggested_action": "read_event_file_contents"}
-        if not state.user_intent:
-            return {"error": "No user intent found. Cannot evaluate without requirements.",
-                    "suggested_action": "parse_user_query"}
+    phase_one_checklist: Dict[str, bool] = Field(description="Verification that extraction completed properly")
+    phase_two_checklist: Dict[str, bool] = Field(description="Verification that evaluation logic was applied correctly")
+
+class ReadAndEvaluateEventTool(BaseModel):
+    """2-phase tool:
+    Phase 1: Read and extract the full contents of a SINGLE event file
+    Phase 2: Compare read eventfile against the user's intent to determine if it's a good match.    
+    CRITICAL: Both extraction and evaluation must be completed with equal care and attention.
+    """
+    action_type: Literal["read_and_evaluate_event"] = "read_and_evaluate_event"
+    think: str = Field(description="Why this event file needs processing and initial assessment")
+    
+    @logfire.instrument("read_and_evaluate_event", extract_args=True, record_return=True)
+    def execute(self, state: StateManager, deps: DependencyManager) -> Union[ExtractedAndEvaluatedEvent, Dict[str, Any]]:
+        if not state.selected_page_id:
+            return {"error": "No page_id selected. Please select a file first.",
+                    "suggested_action": "select_best_event_file"}
         
-        evaluation_prompt = f"""Evaluate if this event matches the user's requirements.
-                                User Requirements:
-                                - Query: {state.user_intent.query_refined}
-                                - Looking for: {', '.join([k.keyword for k in state.user_intent.keywords])}
-                                - City: {state.user_intent.city}
-                                - Start Date: {state.user_intent.timeframe.start_date.isoformat()}
-                                - End Date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
-                                
-
-                                Event Details:
-                                - Title: {state.event_details['parsed']['title']}
-                                - Date: {state.event_details['parsed']['start_datetime']['date']}
-                                - Recurring Dates (if any): {', '.join(state.event_details['parsed'].get('recurring_dates', [])) if state.event_details['parsed'].get('recurring_dates') else 'N/A'}
-                                - Location: {state.event_details['parsed']['location']}
-                                - City: {state.event_details['parsed']['city']}
-                                - Description: {state.event_details['parsed']['description']}                        
-
-                                Consider:
-                                1. Theme/Subject Matter: First evaluate the core subject. Is the event about the user's topic of interest?
-                                   For example, if the user wants a **"pottery making workshop"**:
-                                    - An event called **"Ceramics Glazing Class"** is a strong **THEME match**, as it's about the same craft.
-                                    - An event called **"Beginner's Weaving Workshop"** is a **THEME mismatch**, despite being the same event type.
-                                2. Geographic knowledge (e.g., districts within cities)
-                                3. Date flexibility (e.g., "next few weeks" from user's specified date)
-                                4. Event type synonyms and related concepts
-                                5. User's likely intent even if not explicitly stated
-                                6. Overall Match: An event can be a good overall match even if the type is different, as long as the theme is correct.
-
-                                Be somewhat flexible but not overly permissive.
-                                Always provide answers in Polish language"""
+        page_id = state.selected_page_id
+        
         try:
-            evaluation = deps.client.chat.completions.create(
-                model=deps.evaluation_model,
-                response_model=EventEvaluation,
+            file_path = os.path.join(deps.event_dir, f"{page_id}.md")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                raw_content = f.read()
+        except FileNotFoundError:
+            return {"error": f"Event file not found: {page_id}.md",
+                    "suggested_action": "select_best_event_file"}
+
+        extraction_and_evaluation_prompt = self._build_prompt(state, raw_content)
+        
+        try:            
+            result = deps.client.chat.completions.create(
+                model=deps.read_n_eval_model,
+                response_model=ExtractedAndEvaluatedEvent,
                 messages=[
-                    {"role": "system", "content": "You are evaluating if events match user requirements. Use your knowledge of geography, dates, and event types."},
-                    {"role": "user", "content": evaluation_prompt}
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": extraction_and_evaluation_prompt}
                 ],
                 max_retries=deps.max_retries,
-                temperature=0.1)
+                temperature=0.0)     
 
-            eval_dict = evaluation.model_dump()
-            eval_dict["page_id"] = state.event_details["page_id"]
-            eval_dict["title"] = state.event_details['parsed']['title']
+            if not all(result.phase_one_checklist.values()):
+                logfire.warning(f"Extraction incomplete for {page_id}", 
+                              checklist=result.phase_one_checklist)
             
-            state.last_evaluation = eval_dict
-            state.evaluated_page_ids.append(state.event_details["page_id"])
-            state.evaluation_history.append(eval_dict)
-
-            evaluation.page_id = state.event_details["page_id"]
-            evaluation.title = state.event_details['parsed']['title']
-            return evaluation
+            if not all(result.phase_two_checklist.values()):
+                logfire.warning(f"Evaluation incomplete for {page_id}", 
+                              checklist=result.phase_two_checklist)
+            
+            self._update_state_from_result(result, page_id, raw_content, file_path, state)            
+            return result
             
         except Exception as e:
-            return {"error": f"Evaluation failed: {str(e)}",
-                    "suggested_action": "Try a different approach or select another file."}
+            logfire.error(f"Combined processing failed for {page_id}", error=str(e))
+            return {"error": f"Failed to process event file: {str(e)}",
+                    "suggested_action": "Try select_best_event_file to move to next file"}
     
-    def summarise(self, result: Union[EventEvaluation, Dict[str, str]]) -> str:
+    def _get_system_prompt(self) -> str:
+        return """You are an expert at extracting and evaluating event information. 
+
+                CRITICAL INSTRUCTIONS:
+                1. You MUST complete TWO DISTINCT PHASES of analysis
+                2. Phase 1 (Extraction) must be COMPLETELY finished before starting Phase 2 (Evaluation)
+                3. Give equal attention and care to BOTH phases
+                4. Do NOT rush through extraction to get to evaluation
+                5. All text outputs MUST be in Polish language
+
+                You are processing events in Warsaw, Poland, so use your knowledge of Polish geography, especially Warsaw districts."""
+
+    def _build_prompt(self, state: StateManager, raw_content: str) -> str:
+        return f"""
+                TWO-PHASE PROCESSING - READ ALL INSTRUCTIONS
+
+                You will process this event file in TWO MANDATORY PHASES:
+                - PHASE 1: Extract all information from the raw content
+                - PHASE 2: Evaluate the extracted information against user requirements
+
+                **CRITICAL INSTRUCTIONS: Complete ALL of Phase 1 before starting Phase 2**
+
+                --------------------------------------------------------------------
+                PHASE 1: DATA EXTRACTION
+
+                You are a world-class data extraction engine. Parse the unstructured text below and populate the EventDetails structure.
+
+                **EXTRACTION PRINCIPLES:**
+
+                1. **Comprehensive Field Extraction**: 
+                - Extract ALL fields: title, event_type, dates, location, pricing, audience, description, summary, source_url
+                - If information is missing, use your knowledge to make reasonable inferences
+
+                2. **Intelligent Date & Time Parsing**:
+                - Convert ANY date format to ISO 8601 (YYYY-MM-DDTHH:MM:SSZ)
+                - Handle messy text with dates run together
+                - **start_datetime**: The FIRST session/occurrence of the event, closest to the user-defined start_date
+                - **end_datetime**: The VERY LAST session/occurrence in the entire list
+                - **recurring_dates**: A complete list of ALL individual session dates found
+                - For single events: start and end are the same event's times, recurring_dates is None
+
+                3. **Detailed Content Extraction**:
+                - **event_type**: concert, exhibition, workshop, festival, sports, etc.
+                - **location**: Specific venue name
+                - **city**: Always extract (likely Warszawa)
+                - **district**: Warsaw district if mentioned (e.g., Mokotów, Ursynów)
+                - **summary**: Create a 1-2 sentence Polish summary
+                - **price_info**: Including "free"/"bezpłatne"
+                - **target_audience**: Who is this for
+                - **source_url**: If present in the text
+
+                4. **Language Requirement**:
+                - ALL text fields (title, description, summary) MUST be in Polish
+
+                **User's Timeframe Context:**
+                start_date: {state.user_intent.timeframe.start_date.isoformat()}
+                end_date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'No end date specified'}
+
+                **RAW EVENT CONTENT TO EXTRACT FROM:**
+                ```
+                {raw_content}
+                ```
+
+                **PHASE 1 COMPLETION CHECKLIST** (populate phase_one_checklist):
+                Before moving to Phase 2, verify:
+                - "all_fields_extracted": Did you extract all available information?
+                - "dates_comprehensive": Did you find ALL dates mentioned (including recurring)?
+                - "polish_language": Are all text fields in Polish?
+                - "location_complete": Did you extract venue, city, and district (if available)?
+
+                --------------------------------------------------------------------
+                STOP. Review your extraction. Have you found ALL recurring dates?
+                --------------------------------------------------------------------
+                PHASE 2: EVALUATION AGAINST USER REQUIREMENTS
+
+                Now evaluate the event you just extracted against these requirements:
+
+                **USER IS LOOKING FOR:**
+                - Query: {state.user_intent.query_refined}
+                - City: {state.user_intent.city}
+                - Location/District: {state.user_intent.location or 'Any district'}
+                - start_date: {state.user_intent.timeframe.start_date.isoformat()} 
+                - end_date: {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}
+
+                **EVALUATION CRITERIA:**
+
+                1. **Theme Proximity** (theme_proximity):
+                - "perfect": Exact match (user wants "pottery workshop" → event is "pottery workshop")
+                - "closely_related": Very similar (user wants "pottery" → event is "ceramics class")
+                - "broadly_related": Same category (user wants "rock concert" → event is "music festival")
+                - "unrelated": Different (user wants "rock concert" → event is "jazz")
+
+                2. **Date Proximity** (date_proximity):
+                - "perfect": Event date(s) fall within user's timeframe
+                - "within_a_week": Within 7 days before/after user's timeframe
+                - "within_a_month": Same month but >7 days off
+                - "outside_timespan": Different month/year entirely
+
+                3. **Location Proximity** (location_proximity):
+                - "perfect": Exact city + district match
+                - "adjacent_district": Neighboring district (e.g., Mokotów ↔ Ursynów)
+                - "different_district": Same city, distant district
+                - "different_city": Different city
+
+                4. **Overall Match Decision** (matches.matches):
+                Set to TRUE only if ALL these conditions are met:
+                * theme_proximity is "perfect" OR "closely_related"
+                * date_proximity is "perfect" OR "within_a_week"  
+                * location_proximity is "perfect" OR "adjacent_district"
+                
+                If ANY condition is not met → FALSE
+
+                5. **Confidence Score** (match_confidence):
+                - 1.0 = Perfect match (all criteria perfectly met)
+                - 0.8-0.9 = Strong match (one minor difference)
+                - 0.6-0.7 = Good match (one criterion off)
+                - 0.4-0.5 = Partial match (multiple differences)
+                - 0.2-0.3 = Weak match (mostly wrong)
+                - 0.0-0.1 = No match
+
+                6. **Overall Reasoning**: One-sentence Polish explanation
+
+                **PHASE 2 COMPLETION CHECKLIST** (populate phase_two_checklist):
+                - "theme_checked": Did you classify theme proximity?
+                - "date_checked": Did you classify date proximity?
+                - "location_checked": Did you classify location proximity?
+                - "boolean_logic_applied": Did you apply the AND logic correctly for matches.matches?
+                - "confidence_justified": Does your confidence score match your proximity classifications?
+
+                Remember: Be somewhat flexible but not overly permissive. The user wants relevant results."""
+    
+    def _update_state_from_result(self, result: ExtractedAndEvaluatedEvent, 
+                                  page_id: str, raw_content: str, file_path: str,
+                                  state: StateManager):
+
+        event_dict = result.extracted_details.model_dump()
+        event_dict["start_datetime"]["date"] = event_dict["start_datetime"]["date"].isoformat()
+        event_dict["end_datetime"]["date"] = event_dict["end_datetime"]["date"].isoformat()
+        if event_dict.get("recurring_dates") and event_dict["recurring_dates"].get("all_dates"):
+            event_dict["recurring_dates"]["all_dates"] = [
+                d.isoformat() for d in event_dict["recurring_dates"]["all_dates"]]
+        
+        state.event_details = {
+            "page_id": page_id,
+            "raw_content": raw_content,
+            "parsed": event_dict,
+            "file_path": file_path
+        }
+        
+        state.read_event_page_ids.add(page_id)
+        state.read_event_pages_content_dict[page_id] = event_dict
+        
+        eval_dict = result.evaluation.model_dump()
+        eval_dict["page_id"] = page_id
+        eval_dict["title"] = event_dict['title']
+        
+        state.evaluated_page_ids.append(page_id)
+        state.evaluation_history.append(eval_dict)
+    
+    def summarise(self, result: Union[ExtractedAndEvaluatedEvent, Dict[str, str]]) -> str:
         """Create conversation summary"""
         if isinstance(result, dict) and "error" in result:
             return f"Error: {result['error']}\nSuggested Action: {result['suggested_action']}"
         
-        if result.matches.matches:
-            summary = f"Event '{getattr(result, 'title', 'N/A')}' matches! ({result.match_confidence:.0%} confident) - {result.overall_reasoning}"
-            summary += " The next step is to use 'final_answer' to present this result to the user."
-            return summary
+        evaluation = result.evaluation
+        title = result.extracted_details.title
+
         
+        if evaluation.matches.matches:
+            summary = (f"Event '{title}' is a match! "
+                      f"({evaluation.match_confidence:.0%} confident). "
+                      f"I have saved all details.")
+            next_action = "Your required next action is 'select_best_event_file' to continue processing the list."
         else:
-            summary = f"Event '{getattr(result, 'title', 'N/A')}' doesn't match - {result.overall_reasoning}."
-            summary += "\nThe next step is to use 'select_best_event_file' to pick the next best event from the search results and repeat the process."
-            return summary
+            summary = (f"Event '{title}' doesn't match - {evaluation.overall_reasoning}.")
+            next_action = "Your required next action is 'select_best_event_file' to try the next event."
+        
+        return summary, next_action
         
 ########################
 ##### FINAL ACTION #####
 ########################
 class FinalAction(BaseModel):
     """
-    Provide the final, comprehensive, human-readable answer to the user based on all gathered information.
-    This tool  synthesizes the results to construct the best possible response.
-    If no perfect match is found, it will suggest the best available alternative.
+    This is the final tool that concludes the task. Use this to provide the answer to the user.
+    This tool should ONLY be used in two cases:
+    1. An event has been evaluated and confirmed as a match.
+    2. You have exhausted all other options (e.g., search returned no results, or all results were evaluated as not a match) and you need to inform the user.
     """
     action_type: Literal["final_answer"] = "final_answer"
     think: str = Field(description="Summarize the findings and the reasoning for the final answer.")
 
+    @logfire.instrument("final_action", extract_args=True, record_return=True)
     def execute(self, state: StateManager, deps: DependencyManager) -> str:
         """Generate a comprehensive, human-readable answer from the collected state."""
         
@@ -609,48 +753,163 @@ class FinalAction(BaseModel):
             intent = state.user_intent
             answer = "I'm sorry, but my search for events matching your request came up empty.\n"
             if intent:
-                keywords = [kw.keyword for kw in intent.keywords]
-                answer+=f"I was looking for: An event related to '{', '.join(keywords)}' in {intent.city} around {intent.timeframe.start_date.strftime('%B %Y')} and {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}."
+                answer+=f"I was looking for: An event related to '{intent.semantic_search_query}' in {intent.city} around {intent.timeframe.start_date.strftime('%B %Y')} and {state.user_intent.timeframe.end_date.isoformat() if state.user_intent.timeframe.end_date else 'N/A'}."
                 
-            answer+="\nThere may be no events of this type listed, or you could try searching with different keywords."
+            answer+="\nThere may be no events of this type listed, or you could try searching with different semantic_search_query."
             return answer
-    
-        sorting_key=lambda e: (e.get('theme_matches', False),
-                               e.get('location_matches', False),
-                               e.get('date_matches', False),                               
-                               e.get('type_matches', False),
-                               e.get('confidence', 0))
 
-        best_event_overall = sorted(state.evaluation_history, key=sorting_key, reverse=True)[0]
 
-        if best_event_overall["matches"].get('matches', False):
-            best_page_id = best_event_overall['page_id']
-            best_event_details = state.read_event_pages_content_dict[best_page_id]
-            answer="After reviewing the options, I found an event that's a great match for your request!\n\n\n"
-            answer+=f"\tTitle:  {best_event_details['title']}\n\n"
-            answer+=f"\tDate:  {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
-            answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
-            answer+=f"\tLocation:  {best_event_details['location']}\n\n"
-            answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
-            answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
-            answer+=f"Why this is a good match:\n{best_event_overall['overall_reasoning']}"
+        matching_events = [e for e in state.evaluation_history if e.get("matches", {}).get("matches")]
 
+        if matching_events:            
+            matching_events.sort(key=lambda e: (-e['match_confidence'],
+                                                state.read_event_pages_content_dict[e['page_id']]['start_datetime']['date'])
+                                 )
+
+            answer = f"After reviewing the options, I found {len(matching_events)} event(s) that match your request!\n\n"
+            
+            for i, event_eval in enumerate(matching_events):
+                user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
+
+                page_id = event_eval['page_id']
+                event_details = state.read_event_pages_content_dict[page_id]
+                answer += f"\t--- Event {i+1} ---\n"
+                answer += f"\tTitle:    {event_details['title']}\n"
+                
+                if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"                
+                else:
+                    answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                    answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+                if event_details.get('price_info'):
+                    answer += f"\tPrice:         {event_details['price_info']}\n"
+                answer += f"\tLocation:      {event_details['location']}\n"
+                answer += f"\tSummary: {event_details['summary']}\n"
+                answer += f"\tMore details: {event_details['source_url']}\n\n"
+                answer +="\n"
+            
             return answer
+
+
+        non_perfect_evals = [e for e in state.evaluation_history if not e.get("matches", {}).get("matches")]
+
+        close_alternatives = [
+            e for e in non_perfect_evals
+            if e.get('theme_proximity') in ['perfect', 'closely_related'] and
+            (e.get('date_proximity') in ['perfect', 'within_a_week', 'within_a_month'] or e.get('location_proximity') in ['perfect', 'adjacent_district'])]
+
+        if close_alternatives:
+            close_alternatives.sort(key=lambda e: -e['match_confidence'])
+            answer = "I couldn't find a perfect match. However, I found these very close alternatives:\n\n"
+
+            close_alternatives = close_alternatives[:3]
+            for i, event_eval in enumerate(close_alternatives):
+                user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
+                page_id = event_eval['page_id']
+                event_details = state.read_event_pages_content_dict[page_id]
+                answer += f"\t--- Event {i+1} ---\n"
+                answer += f"\tTitle:    {event_details['title']}\n"
+
+                if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)
+                                    ]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"
+                else:
+                    answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                    answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+                if event_details.get('price_info'):
+                    answer += f"\tPrice:         {event_details['price_info']}\n"
+                answer += f"\tLocation:      {event_details['location']}\n"
+                answer += f"\tSummary: {event_details['summary']}\n"
+                answer += f"\tMore details: {event_details['source_url']}\n\n"
+                answer +="\n"
+                answer += f"\tReasoning: {event_eval['overall_reasoning']}\n\n"
+            return answer
+                                                   
+        theme_only_alternatives = [e for e in non_perfect_evals
+                                    if e.get('theme_proximity') in ['perfect', 'closely_related']]
         
-        else:
-            best_page_id = best_event_overall['page_id']
-            best_event_details = state.read_event_pages_content_dict[best_page_id]
-            answer="I couldn't find a perfect match for your request. However, after reviewing all the options, here is the closest alternative I found:\n\n\n"
-            answer+=f"\tTitle: {best_event_details['title']}\n\n"
-            answer+=f"\tStart Date: {self._format_date(best_event_details['start_datetime']['date'])}\n\n"
-            answer+=f"\tEnd Date: {self._format_date(best_event_details['end_datetime']['date'])}\n\n"
-            answer+=f"\tLocation: {best_event_details['location']}\n\n"
-            answer+=f"\tBrief Summary: {best_event_details['summary']}\n\n"
-            answer+=f"\tMore details can be found here: {best_event_details['source_url']}\n\n"
-            answer+=f"Please note why this isn't a perfect match:\n{best_event_overall['overall_reasoning']}\n"
-            answer+="This might still be of interest to you. If not, you could try rephrasing your request with a different date or keywords."
+        if theme_only_alternatives:
+            theme_only_alternatives.sort(key=lambda e: -e['match_confidence'])
+            answer = "While I couldn't find a close match, these events have the right theme but differ in other aspects like date or location:\n\n"
 
+            theme_only_alternatives = theme_only_alternatives[:3]
+            for i, event_eval in enumerate(theme_only_alternatives):
+                user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
+                page_id = event_eval['page_id']
+                event_details = state.read_event_pages_content_dict[page_id]
+                answer += f"\t--- Event {i+1} ---\n"
+                answer += f"\tTitle:    {event_details['title']}\n"
+                if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"                
+                else:
+                    answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                    answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+                if event_details.get('price_info'):
+                    answer += f"\tPrice:         {event_details['price_info']}\n"
+                answer += f"\tLocation:      {event_details['location']}\n"
+                answer += f"\tSummary: {event_details['summary']}\n"
+                answer += f"\tMore details: {event_details['source_url']}\n\n"
+                answer +="\n"
+                answer += f"\tReasoning: {event_eval['overall_reasoning']}\n\n"
             return answer
+
+        if state.evaluation_history:
+            best_overall_event = sorted(state.evaluation_history, key=lambda e: e['match_confidence'], reverse=True)[0]
+            page_id = best_overall_event['page_id']
+            event_details = state.read_event_pages_content_dict[page_id]
+            answer = "I couldn't find any close matches for your request. After reviewing all options, the single closest event I found is:\n\n"
+            answer += f"\tTitle:    {event_details['title']}\n"
+
+            if event_details.get("recurring_dates") and len(event_details.get("recurring_dates"))>1:
+                    user_start = datetime.fromisoformat(state.user_intent.timeframe.start_date.isoformat()).date()
+                    user_end = datetime.fromisoformat(state.user_intent.timeframe.end_date.isoformat()).date() if state.user_intent.timeframe.end_date else user_start
+                    
+                    relevant_dates = [dt_str for dt_str in event_details["recurring_dates"] 
+                                    if user_start <= datetime.fromisoformat(dt_str).date() <= user_end + timedelta(days=14)]
+
+                    if relevant_dates:
+                        answer+=f"\tUpcoming Dates in {user_start.strftime('%B %Y')}:\n"
+                        for dt_str in relevant_dates:
+                            answer += f"\t\t- {self._format_date(dt_str)}\n"                
+            else:
+                answer += f"\tStart Date:     {self._format_date(event_details['start_datetime']['date'])}\n"
+                answer += f"\tEnd Date:       {self._format_date(event_details['end_datetime']['date'])}\n"
+
+            if event_details.get('price_info'):
+                answer += f"\tPrice:         {event_details['price_info']}\n"
+            answer += f"\tLocation:      {event_details['location']}\n"
+            answer += f"\tSummary: {event_details['summary']}\n"
+            answer += f"\tMore details: {event_details['source_url']}\n\n"
+            answer +="\n"
+            answer += f"\tReasoning: {best_overall_event['overall_reasoning']}\n\n"
+            return answer
+
+        return "I am sorry, but I was unable to find any relevant events after a thorough search."
+    
 
     def _format_date(self, date_str: str) -> str:
         """Format date nicely for display."""
@@ -662,30 +921,17 @@ class FinalAction(BaseModel):
             return date_str
 
     def summarise(self, result: str) -> str:
-        """The result is the final answer, so we just summarize that an answer was provided."""
-        return "A final answer has been generated and provided to the user."
+        """The result is the final answer. This summary signals the end of the task."""
+        return "A final answer has been generated and provided to the user. The task is now complete."    
 
 
-AgentActions = Union[ParseUserQueryTool,SearchEventPageTitlesTool, SelectEventFileTool,
-                     ReadEventFileTool, EvaluateEventTool, FinalAction]
-
-
-### Rebuild the damn models
-StateManager.model_rebuild()
-DependencyManager.model_rebuild()
-UserIntentDateTime.model_rebuild()
-UserIntentKeyWord.model_rebuild()
-UserIntent.model_rebuild()
-ParseUserQueryTool.model_rebuild()
-EventTitleResult.model_rebuild()
-SearchEventPageTitlesTool.model_rebuild()
-EventDetailsStart.model_rebuild()
-EventDetailsEnd.model_rebuild()
-EventDetails.model_rebuild()
-SelectEventFileTool.model_rebuild()
-ReadEventFileTool.model_rebuild()
-EventEvaluation.model_rebuild()
-EvaluateEventTool.model_rebuild()
+AgentActions = Union[ParseUserQueryTool,
+                     SearchEventPageTitlesTool,
+                     SelectEventFileTool,
+                    #  ReadEventFileTool, 
+                    #  EvaluateEventTool, 
+                     ReadAndEvaluateEventTool,
+                     FinalAction]
 
 
 ####################################################################
@@ -698,22 +944,21 @@ SYSTEM_PROMPT = f"""You are an AI assistant specialized in finding local events 
 Today is {datetime.now().strftime('%A, %B %d, %Y')}.
 
 You have access to these tools:
-1. parse_user_query - Extract what the user is looking for (keywords, location, dates)
+1. parse_user_query - Extract what the user is looking for (semantic_search_query, location, dates)
    Use this FIRST to understand the request.
    Only re-run if you exhaust all other options.
 
-2. search_event_pages - Search event database using keyword embeddings
+2. search_event_pages - Search event database using semantic_search_query embeddings
    Returns multiple results ranked by relevance
 
 3. select_best_event_file - Select the next most relevant event from search results
    Automatically picks the best unreviewed option
 
-4. read_event_file_contents - Read full details of the selected event
-   Extracts structured information including dates, location, type
+4. read_and_evaluate_event - A 2-phase tool
+                            * Phase 1: Read full details of the selected event extracting structured information including dates, location, type
+                            * Phase 2: Evaluate whether the event details match the user requirements
 
-5. evaluate_event_details_against_user_query - Evaluate whether the event details match the user requirements
-
-6. final_answer - Provide the final response to the user
+5. final_answer - Provide the final response to the user
    Can report success, no matches, or partial matches
 
 Each tool requires:
@@ -743,7 +988,8 @@ class MyAgent:
                  reading_model: str = "gpt-4.1-mini",
                  parsing_model: str = "gpt-4.1-mini" , 
                  evaluation_model: str = "gpt-4.1-mini",
-                 verbose: bool = True):
+                 read_n_eval_model: str = "gpt-4.1-mini",
+                 verbose: bool = False):
 
         self.verbose = verbose
         self.state = StateManager()
@@ -756,7 +1002,7 @@ class MyAgent:
             parsing_model=parsing_model,
             evaluation_model=evaluation_model,
             reading_model=reading_model,
-            
+            read_n_eval_model=read_n_eval_model,            
             event_dir=EVENT_DIR)
         
         self.conversation_history = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -767,8 +1013,8 @@ class MyAgent:
         if self.verbose:
             print(message)
 
-
-    def step(self, user_query: str, max_steps: int = 15) -> str:
+    @logfire.instrument("Agent Run", record_return=True)
+    def step(self, user_query: str, max_steps: int = 20) -> str:
         """Process user query through multiple reasoning steps.
         Make independent decisions and use tools autonomously to gather information
         Necessary to answer the user's query.
@@ -795,19 +1041,27 @@ class MyAgent:
                     response_model=AgentActions,
                     messages= self.conversation_history,
                     max_retries=self.deps.max_retries,
-                    max_tokens=4096,
-                    temperature=0.1
-                )
+                    temperature=0.1)
+
+                if isinstance(action, FinalAction):
+                    answer = action.execute(state=self.state, deps=self.deps)
+                    logfire.info(f"Final Answer: {answer}")
+                    return answer
+                    
                 results = action.execute(state=self.state, deps=self.deps)
 
-                summary = action.summarise(results)
+                summary, next_action = action.summarise(results)
                 action_summary = f"Action: {action.action_type}\n\nThink: {action.think}\n\nResult: {summary}\n"
+                logfire.info(f"Action summary at step: {step_num+1}: {action_summary}")
+                logfire.info(f"State at step: {step_num+1}: {self.state.model_dump()}")
                 self._log(action_summary)
-                
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": action_summary
-                })
+
+                self.conversation_history.extend([
+                    {"role": "assistant",
+                    "content": action_summary},
+                    {"role": "user",
+                    "content": next_action}])
+                logfire.info(f"Conversation history at step {step_num+1}: {self.conversation_history}")
 
                 self.action_history.append({
                     "step": step_num + 1,
@@ -817,12 +1071,10 @@ class MyAgent:
                     "summary": summary
                 })
 
-                if isinstance(action, FinalAction):
-                    answer = action.execute(state=self.state, deps=self.deps)
-                    return answer
                 
             except Exception as e:                
                 self._log(f"Error during action generation: {e}")
+                logfire.debug(f"Error during action generation: {e}")
                 self.conversation_history.append({
                     "role": "assistant",
                     "content": f"Error occured: {str(e)}."
@@ -831,6 +1083,8 @@ class MyAgent:
                     "role": "user",
                     "content": f"Error: {str(e)}. Try a different appraoch"
                 })
+                logfire.info(f"Conversation history after error at step {step_num+1}: {self.conversation_history}")
+                
         self._log("\nReached maximum steps.\nRequesting final answer...\n")            
         self.conversation_history.append({
             "role": "user",
@@ -842,10 +1096,9 @@ class MyAgent:
                 model=self.deps.main_model,
                 response_model=FinalAction,
                 messages=self.conversation_history,
-                max_retries=self.deps.max_retries,
-                max_tokens=4096
-            )
+                max_retries=self.deps.max_retries)
             answer = final_action.execute(state=self.state, deps=self.deps)
+            logfire.info(f"Final Answer: {answer}")
             self._log(f"\nFinal Thought: {final_action.think}")
             return answer
         
@@ -865,13 +1118,16 @@ class MyAgent:
         return "\n".join(summary_parts)
     
 if __name__ == "__main__":
-    
-    while True:
+    user_query =''
+    while True and user_query.lower() != 'exit':
         user_query = input("Enter your query (or 'exit' to quit): ")
         try:
-            if user_query.lower() == 'exit':
-                break
             
+            logfire.configure(token=os.environ.get("LOGFIRE_TOKEN"), console=False)
+            logfire.instrument_openai()
+            # logfire.instrument_pydantic(
+            #     # record='metrics'
+            #     )
             agent = MyAgent(main_model="gpt-4.1-mini", verbose=True)
             final_answer = agent.step(user_query)
             print(f"\nFinal Answer: {final_answer}")
