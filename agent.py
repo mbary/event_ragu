@@ -13,7 +13,7 @@ from openai import OpenAI
 import logfire
 from dotenv import load_dotenv
 from pprint import pprint
-from setup_db import init_collection
+from data.setup_db import init_collection
 load_dotenv()
 
 
