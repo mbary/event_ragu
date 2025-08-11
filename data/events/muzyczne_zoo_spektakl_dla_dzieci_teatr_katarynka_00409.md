@@ -1,0 +1,11 @@
+# URL: https://rembertow.um.warszawa.pl/-/muzyczne-zoo-spektakl-dla-dzieci
+# Muzyczne ZOO - spektakl dla dzieci / Teatr Katarynka
+24.07.2025 18:00 - 24.07.2025 20:00
+Teren rekreacyjny,   Frontowa,   Warszawa
+Zapraszamy wszystkie dzieci na muzyczne ZOO! Wydarzenie odbędzie się 24 lipca 2025r. o godzinie 18:00 na terenie rekreacyjnym przy ul. Frontowej.
+ Wydarzenie zapewnia następujące udogodnienia 
+![Plakat promujący RembART Festiwal 2025 — kolorowy afisz z listą wydarzeń kulturalnych odbywających się od 15 czerwca do 27 lipca 2025 roku. Zawiera daty, godziny, lokalizacje i opisy koncertów oraz spektakli dla dzieci. Wśród wydarzeń znajduje się m.in. „Warzywne Show” (26 czerwca, godz. 18:00, boisko przy ul. Czwartaków 4), koncert zespołu Czerwone Gitary, spektakl „Księżniczka na ziarnku grochu” i inne atrakcje muzyczne i teatralne.](https://cdn.um.warszawa.pl/documents/50378/26216933/RembART+Festiwal+GR.png/40238425-d5c1-4cba-4ace-143e70fc54b2?version=1.0&t=1749801939462&imageThumbnail=1)
+×Zamknij galerię
+![Plakat promujący RembART Festiwal 2025 — kolorowy afisz z listą wydarzeń kulturalnych odbywających się od 15 czerwca do 27 lipca 2025 roku. Zawiera daty, godziny, lokalizacje i opisy koncertów oraz spektakli dla dzieci. Wśród wydarzeń znajduje się m.in. „Warzywne Show” (26 czerwca, godz. 18:00, boisko przy ul. Czwartaków 4), koncert zespołu Czerwone Gitary, spektakl „Księżniczka na ziarnku grochu” i inne atrakcje muzyczne i teatralne.](https://cdn.um.warszawa.pl/documents/50378/26216933/RembART+Festiwal+GR.png/40238425-d5c1-4cba-4ace-143e70fc54b2?version=1.0&t=1749801939462&imagePreview=1) 
+Plakat promujący RembART Festiwal 2025 (.png, 591KB) zdjęcie 1 z 1
+![Plakat promujący RembART Festiwal 2025 — kolorowy afisz z listą wydarzeń kulturalnych odbywających się od 15 czerwca do 27 lipca 2025 roku. Zawiera daty, godziny, lokalizacje i opisy koncertów oraz spektakli dla dzieci. Wśród wydarzeń znajduje się m.in. „Warzywne Show” (26 czerwca, godz. 18:00, boisko przy ul. Czwartaków 4), koncert zespołu Czerwone Gitary, spektakl „Księżniczka na ziarnku grochu” i inne atrakcje muzyczne i teatralne.](https://cdn.um.warszawa.pl/documents/50378/26216933/RembART+Festiwal+GR.png/40238425-d5c1-4cba-4ace-143e70fc54b2?version=1.0&t=1749801939462&imageThumbnail=1)
