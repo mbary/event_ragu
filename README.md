@@ -1,5 +1,22 @@
 # Event RAG Agent
 
+## Table of Contents
+- [Overview](#overview)
+- [System Architecture](#system-architecture)
+  - [Core Components](#core-components)
+  - [Detailed Agent Workflow](#detailed-agent-workflow)
+- [LLM-as-a-Judge Evaluation System](#llm-as-a-judge-evaluation-system)
+  - [Evaluation Architecture](#evaluation-architecture)
+  - [Custom "Factual Correctness" Judge](#custom-factual-correctness-judge)
+  - [Standard DeepEval Judges](#standard-deepeval-judges)
+  - [Synthetic Dataset Generation](#synthetic-dataset-generation)
+  - [Example Queries](#example-queries)
+- [Technical Implementation Details](#technical-implementation-details)
+  - [Agent State Management Architecture](#agent-state-management-architecture)
+- [Vector Database Creation Process](#vector-database-creation-process)
+- [Main Obstacles Encountered](#main-obstacles-encountered)
+- [Planned Improvements](#planned-improvments)
+
 An Agentic RAG system for finding and recommending events.<br>
 Though, due to some implementation decisions, I am no longer sure whether it is actually an 'agent' or 
 a agentic-workflow, as defined by [Anthropic](https://www.anthropic.com/engineering/building-effective-agents).<br>
