@@ -1,62 +1,52 @@
 # Event RAG Agent
 
-An Agentic RAG system for finding and recommending events. The agent uses multi-step reasoning, state management, and vector search to process natural language queries in Polish and return relevant events scraped from Warsaw's official event calendar.
+An Agentic RAG system for finding and recommending events.<br>
+Though, due to some implementation decisions, I am no longer sure whether it is actually an 'agent' or 
+a agentic-workflow, as defined by [Anthropic](https://www.anthropic.com/engineering/building-effective-agents).<br>
+In any case, for ease of use, I will be referring to it as a agent.<br>
+The agent uses multi-step reasoning, state management, and vector search to process natural language queries in Polish and return relevant events scraped from Warsaw's official event calendar.
 
-For now the agent is focused on events in Warsaw, Poland, but the architecture is designed to be expandable to potentially any city in Poland.
+For now the agent is focused on events in Warsaw, Poland, but the architecture is designed to be easily scaled to potentially any city in Poland.<br>
 ## Overview
+Firstly, I scraped the event data from Warsaw's official local government website (`um.warszawa.pl`).<br>
+Since LLM's prefer (or rather, perform better with) .md files, I converted each file, parsing and condensing them ever so slightly, removing unnecessary fluff such as links, images etc.
 
-This project implements a RAG pipeline with multi-step reasoning that:
-- **Scrapes** event data from Warsaw's official city website (`um.warszawa.pl`)
-- **Processes** and indexes events using semantic embeddings via ChromaDB
-- **Understands** user queries through structured intent parsing with detailed date/location logic
-- **Searches** using vector similarity with diminishing returns optimization
-- **Evaluates** events through two-phase extraction and matching against multiple criteria
-- **Decides** when to continue searching vs. provide results
-- **Responds** with event information in Polish with multiple fallback strategies
+Then, I built a vector databaase using ChromaDB, where I stored the semantic summaries of the events (details in the latter section of the REEADME).<br>
+
+The agent works as follows:
+1. Parses the user query, extracting key information and inferring information that the user might not have explicitly mentioned, such as the date or some keywords.
+2. Based on the information extracted from the query, it performs a vector search in the database.
+3. Selects the best event file.
+4. Reads the event file (extracting relevant information) and evaluates it against the user query.
+5. Repeats steps 3-4 until a satisfactory match is found (or multiple matching events!) and returns the final answer.
+
+The agent has the 'freedom' to choose when to stop searching for events, based on the diminishing returns analysis (more details follow).
+
+In order to evaluate the agent's performance, I needed some ground-truth data.<br>
+I generated synthetic quereis, mimicking a potential user, based on the event files. <br>
+I then tried evaluating the agent using a LLM-as-a-Judge framework, where based on a custom metric and some predefined GEval metrics, the agent's performance is evaluated against the expected output.<br>
+Turns out, creating realistic queries that would result in the expected output was harder than I thought (more on that in the last section) and the agent performance is not as good as it could've been.<br>
+I believe that the key to properly evaluating the agent, is generating and adequate set of queries, but it seems extremely hard to emulate user behaviour.
 
 ## System Architecture
 
 ### Core Components
 
 1. **Scraping Pipeline** (`scrape_events.py`)
-
-
 2. **Vector Database Pipeline** (`build_db.py`, `setup_db.py`)
-   - **Semantic Extraction**: GPT-4.1-mini processes raw event files into structured summaries
-   - **Structured Models**: Pydantic validation ensures consistent data format
-   - **Embedding Generation**: OpenAI text-embedding-3-small creates vector representations
-   - **ChromaDB Storage**: Persistent client with cosine similarity indexing
-
 3. **Multi-Step Agent** (`agent.py`)
-   - **StateManager**: Tracks conversation, search results, evaluations, and extracted data
-   - **DependencyManager**: Manages LLM clients, models, ChromaDB collection, and retry logic
-   - **5 Structured Tools**:
-     - `ParseUserQueryTool`: Intent extraction with date logic and semantic query synthesis
-     - `SearchEventPageTitlesTool`: Vector similarity search with result deduplication
-     - `SelectEventFileTool`: Decision-making with diminishing returns analysis
-     - `ReadAndEvaluateEventTool`: Two-phase extraction and multi-criteria evaluation
-     - `FinalAction`: Response generation with multiple fallback strategies
-   - **Conversation Management**: System prompts, action history, and error recovery
-   - **Logfire Integration**: Monitoring and debugging
 
-4. **Evaluation Framework**
-   - **Question Generation** (`question_generation.ipynb`): Synthetic dataset creation with GPT models
-   - **Automated Testing** (`eval.ipynb`): DeepEval integration with custom metrics
-   - **Performance Analysis** (`deepeval_visualization.ipynb`): Statistical analysis and comparison tools
-   - **Multi-run Comparison**: Side-by-side performance tracking with improvement detection
 
 ### Detailed Agent Workflow
-
 ```
 1. User Query → ParseUserQueryTool
    ├─ Date Logic (current_date, relative dates, ranges)
    ├─ Location Extraction (districts, venues)  
    ├─ Semantic Query Synthesis
-   └─ Intent Structuring (UserIntent model)
+   └─ Intent Structuring 
 
 2. Structured Intent → SearchEventPageTitlesTool
    ├─ Vector Query (ChromaDB with n_results=20)
-   ├─ Result Deduplication
    ├─ Distance Sorting
    └─ Event Title Results
 
@@ -68,10 +58,10 @@ This project implements a RAG pipeline with multi-step reasoning that:
 
 4. Selected Event → ReadAndEvaluateEventTool
    ├─ Phase 1: Comprehensive Data Extraction
-   │  ├─ Date/Time Parsing (ISO 8601)
+   │  ├─ Date/Time Parsing
    │  ├─ Location/District Detection
    │  ├─ Event Type Classification
-   │  └─ Content Summarization (Polish)
+   │  └─ Content Summarization
    └─ Phase 2: Multi-Criteria Evaluation
       ├─ Theme Proximity (perfect/closely_related/broadly_related/unrelated)
       ├─ Date Proximity (perfect/within_a_week/within_a_month/outside_timespan)  
@@ -82,35 +72,43 @@ This project implements a RAG pipeline with multi-step reasoning that:
    ├─ Match Found → Final Response Generation
    ├─ No Match → Next Event Selection
    └─ Exhausted Results → Alternative Suggestions
+
+6. Final Response → FinalActionTool
+   ├─ Hierarchical Response Structure
+   │  ├─ Perfect Matches
+   │  ├─ Close Alternatives
+   │  ├─ Theme Matches
+   │  └─ Best Overall Attempt
 ```
+1. **Parsing User Query**: The agent starts by parsing the user query to extract key information. It attempts to infer details not explicitly mentioned by the user, e.g. 'next weekend' is interpreted as the upcoming Saturday and Sunday.
+Structures these details into specific concepts, creating a semantic representation of the user's intent, in a form of search query.
+2. **Searching Event Titles**: Using the semantic search query from step 1, the agent searches the vector database for events most closely matching the query. It retrieves the top 20 results.
+3. **Selecting Event File**: The events are evaluated based on the calculated distance measures.<br>
+This is the key decision point for the agent. At this stage, the agent decides whether to continue searching for more vents or stop processing and return the best match found so far. It 'looks ahead' at the next 5 events, compares their distance scores against the best 2 matches found so far and makes a decision.<br>
+If the difference between the best match and the next event is small (implying that the next event might be of interest to the user), the agent continues to read and evaluate said event. If, however, the difference is large, the agent stops processing and returns the best match(es) found so far.<br>
 
-## Key Features
+   1. If this is the first iteration, the agent selects the first 'closest' event.
+   2. In latter iterations, the agent 'looks ahead' and the next 5 events' distance scores and decides whether to continue processing or stop.
+4. **Reading and Evaluating Event**: The agent reads the selected event file, extracting relevant information such as date, time, location, and event type. It then evaluates the event against the user query using a multi-criteria matching system.<br> 
+   + **Phase 1: Reading The Event**<br>
+   Frist step is to extract the obvious event information such as date, time and location, then come the more complex details such as the event type, the underlying theme, and the purpose of the event. The key is to _understand_ what the event is about, not just to extract the details.
 
-### Query Processing
-- **Date Parsing**: Handles Polish relative dates ("w ten weekend", "w przyszłym miesiącu")
-- **District Recognition**: Understands Warsaw districts and adjacent relationships  
-- **Semantic Enhancement**: Transforms casual queries into detailed search terms
+   + **Phase 2: Evaluating The Event**<br> 
+The evaluation phase is quite an intricate process, it compares the details extracted in Phase 1 with the user requirements.<br>
+The agent must decide and understand how well the event theme/location/date/purpose matches the user's query.<br>
+The events are scored on multiple criteria such as:
+     + **Theme Proximity**: How closely the event's theme matches the user's query (perfect, closely related, broadly related, unrelated).
+     - **Date Proximity**: How well the event's date aligns with the user's requirements (perfect, within a week, within a month, outside timespan).
+     - **Location Proximity**: How close the event's location is to the user's specified area (perfect, adjacent district, different district, different city).
+     - **Confidence Scoring**: A numerical score from 0.0 to 1.0 indicating how well the event matches the user's query.
 
-### Search Optimization
-- **Diminishing Returns**: Analyzes search distance patterns to optimize stopping points
-- **Confidence Thresholding**: Uses 0.7+ confidence for high-quality matches
-- **Title Similarity**: Prevents processing duplicate events across pages
-- **Distance Analysis**: Compares new results against best found matches
+5. **Final Response Generation**: steps 3 and 4 are repeated until a satisfactory match is found or all events have been processed. If a perfect match is found, the agent generates a response containing the event details. If no perfect match is found, it provides close alternatives or suggests the best overall event based on the evaluation criteria.
 
-### Event Evaluation  
-- **Two-Phase Processing**: Extraction then evaluation in separate phases
-- **Multi-Criteria Matching**: Boolean logic combining theme, date, and location proximity
-- **Confidence Scoring**: 0.0-1.0 scoring based on proximity classifications  
-- **Fallback Strategies**: Close alternatives, theme-only matches, best overall when no perfect match
 
-### Response Generation
-- **Hierarchical Results**: Perfect matches → close alternatives → theme matches → best attempt
-- **Polish Formatting**: Native language dates, descriptions, and reasoning
-- **Recurring Events**: Smart date filtering for event series
 
 ## LLM-as-a-Judge Evaluation System
 
-The project implements a comprehensive LLM-as-a-Judge evaluation framework using DeepEval, where GPT-4.1-mini serves as the evaluator to assess agent performance across multiple dimensions.
+The project implements a LLM-as-a-Judge evaluation framework using DeepEval, where LLMs serve as the evaluators to assess agent performance across multiple dimensions.
 
 ### Evaluation Architecture
 
@@ -147,33 +145,36 @@ custom_metric = GEval(
 
 **Answer Relevancy Judge:**
 - Evaluates how well the response addresses the original user query
-- Penalizes irrelevant details (fees, registration) when user asks for basic info (when/where)
 - Uses semantic similarity and content analysis
-- Threshold: 0.7 (success rate: 72-90%)
+- Threshold: 0.7
 
 **Faithfulness Judge:**  
 - Measures consistency between retrieval context and generated response
 - Detects hallucinations and information distortions
 - Compares event names, dates, locations against source material
-- Threshold: 0.6 (success rate: 70-80%)
+- Threshold: 0.6 
 
 ### Synthetic Dataset Generation
 
-**GPT-4o Question Generation Pipeline:**
-- Generates realistic Polish queries from event files
+**Synthetic Question Generation:**
+- Generates realistic queries from event files
 - Creates questions using general terms (not technical jargon)
 - Ensures entity-specific queries mention key details
-- Produces 10-30 question-answer pairs per evaluation run
 
 **Quality Control:**
 - Date-aware query generation (specific timeframes for past events)
 - Natural language patterns matching real user behavior
 
 
+### Example Queries
+- "Bezpłatne koncerty w Warszawie w weekend"
+- "Warsztaty dla dzieci na Mokotowie w sierpniu"
+- "Wystawy sztuki współczesnej w centrum miasta"
+- "Wydarzenia sportowe na Bemowie w przyszłym tygodniu"
 
 ## Technical Implementation Details
 
-### State Management Architecture
+### Agent State Management Architecture
 - **StateManager**: Centralized conversation state with 8 tracked properties
   - `original_query`: User's initial request
   - `user_intent`: Parsed structured intent (UserIntent model)
@@ -190,12 +191,12 @@ custom_metric = GEval(
 
 ## Vector Database Creation Process
 
-The raw scraped event files need to be transformed into something searchable.
+The raw scraped event files need to be transformed into something searchable.<br>
+
 
 ### Step 1: Making Sense of Raw Event Data
 
-Each scraped markdown file gets fed through GPT-4.1-mini to extract the important bits:
-
+Using another model, I extract the most important pieces of information into (title, time and location) and distil the files into a (hopefully) semantically complete summary of the event.<br>
 ```python
 class SemanticExtraction(BaseModel):
     title: str = Field(description="The official, clean title of the event.")
@@ -205,13 +206,9 @@ class SemanticExtraction(BaseModel):
     location_summary: str = Field(description="Clean location summary",
                                  examples=['Ursynów, Warszawa', 'Park Kultury w Powsinie'])
 ```
-
-The extraction runs 5 files at once to speed things up. GPT gets strict instructions to focus on what the event is actually about, capturing the underlying theme of the event.
-
 ### Stage 2: Document Preparation for Embedding
 
-Each extracted summary is formatted into a searchable document:
-
+The extracted information and the summary are then formatted int oa structured doctument ready for embedding, and converted into vector representations.<br>
 ```python
 document_for_embedding = (
     f"Tytuł: {summary.title}\n"
@@ -221,45 +218,7 @@ document_for_embedding = (
 )
 ```
 
-**Document Structure:**
-- **Polish Headers**: "Tytuł", "Opis", "Kiedy", "Gdzie" for semantic consistency
-- **Structured Format**: Consistent layout enables better vector similarity
-- **Metadata Storage**: Page ID and title stored separately for retrieval
 
-### Stage 3: Vector Generation and Storage
-
-**ChromaDB Configuration:**
-```python
-collection = db_client.create_collection(
-    name="event_semantic_summaries",
-    embedding_function=OpenAIEmbeddingFunction(model="text-embedding-3-small"),
-    metadata={"hnsw:space": "cosine"}
-)
-```
-
-**Embedding Process:**
-- **OpenAI Model**: text-embedding-3-small
-- **Persistent Storage**: ChromaDB saves to `.chroma_db/` directory
-
-### Stage 4: Database Indexing and Optimization
-
-### Search Query Processing
-
-When the agent performs vector search:
-
-1. **Query Vectorization**: User query converted 
-2. **Similarity Calculation**: Cosine similarity computed against all stored vectors  
-3. **Result Ranking**: Top 20 most similar events returned with distance scores
-4. **Metadata Retrieval**: Page IDs and titles extracted for further processing
-
-This creates a semantically aware search system where queries like "zajęcia jogi na Ursynowie" automatically find yoga-related events in the Ursynów district, even if the exact words don't appear in the event descriptions.
-
-
-### Example Queries
-- "Bezpłatne koncerty w Warszawie w weekend"
-- "Warsztaty dla dzieci na Mokotowie w sierpniu"
-- "Wystawy sztuki współczesnej w centrum miasta"
-- "Wydarzenia sportowe na Bemowie w przyszłym tygodniu"
 
 ## Main Obstacles Encountered
 The main challenges I faced during development were:
